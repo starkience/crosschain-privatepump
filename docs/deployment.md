@@ -19,18 +19,27 @@ their class hashes and the bridge release immediately before a public launch.
 
 ## Deploy the EVM factory
 
-Create an untracked `.env.local` from `.env.example`. The Alchemy key may be used in both RPC URLs,
-but a funded Base Sepolia deployer private key is also required.
+Create an untracked `.env.local` from `.env.example`. The Alchemy key may be used in both RPC URLs.
+Create a dedicated encrypted Foundry keystore and fund its address with Base Sepolia ETH; do not put
+the deployer key in an environment file.
 
 ```sh
+cast wallet new ~/.foundry/keystores privatepump-sepolia
+cast wallet address --account privatepump-sepolia
+
 set -a
 . ./.env.local
 set +a
 forge script evm/script/Deploy.s.sol:Deploy \
   --root evm \
   --rpc-url "$BASE_SEPOLIA_RPC_URL" \
+  --account privatepump-sepolia \
   --broadcast
 ```
+
+The prepared testnet deployer for this deployment is recorded in
+`deployments/base-sepolia.json`. At the recorded snapshot its Base Sepolia balance is zero, so
+broadcasting is intentionally blocked until it is faucet-funded.
 
 Record the transaction, factory address, bytecode hash, compiler version, and block number in
 `deployments/base-sepolia.json`. Verify the source once a BaseScan API key is configured.

@@ -1,7 +1,8 @@
 {
   "network": "base-sepolia",
   "chainId": 84532,
-  "status": "awaiting-deployer-key",
+  "status": "awaiting-deployer-funding",
+  "deployer": "0xaDBf9a7D4708D1576c84Cc5A670158d27a62a89B",
   "factory": null,
   "deploymentTransaction": null,
   "deploymentBlock": null,

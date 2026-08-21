@@ -6,10 +6,8 @@ import { PrivateLaunchpadAccountFactory } from "../src/PrivateLaunchpadAccountFa
 
 contract Deploy is Script {
     function run() external returns (PrivateLaunchpadAccountFactory factory) {
-        uint256 deployerKey = vm.envUint("EVM_DEPLOYER_PRIVATE_KEY");
-        vm.startBroadcast(deployerKey);
+        vm.startBroadcast();
         factory = new PrivateLaunchpadAccountFactory();
         vm.stopBroadcast();
     }
 }
-
