@@ -15,6 +15,7 @@ in browser memory and must never be logged or persisted.
 ```ts
 import {
   createPrivateLaunchpadIdentityMessage,
+  createStarkwarePrivacyBridgeEngine,
   PrivateLaunchpadClient,
   preparedCallsAdapter,
 } from "@private-launchpad/sdk";
@@ -30,11 +31,11 @@ const plugin = new PrivateLaunchpadClient({
   usdc: BASE_SEPOLIA_USDC,
   publicClient,
   relay: (request) => relayer.submit(request),
-  bridge: {
-    deriveEvmOwner: derivePolygonEoa,
+  bridge: createStarkwarePrivacyBridgeEngine({
+    derivePolygonEoa,
     fundAccountFromPool,
     returnToPool,
-  },
+  }),
 });
 
 const identitySignature = await walletClient.signMessage({

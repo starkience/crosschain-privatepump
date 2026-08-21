@@ -17,6 +17,10 @@ Snapshot date: 2026-08-21. Revalidate before release.
   atomically mints into an open note.
 - The bridge's package currently requires GitHub Packages authorization. Its key derivation,
   discovery, proving, cursor recovery, and CCTP logic are injected rather than copied here.
+- Compatibility was checked by building the tagged bridge package `0.1.21` against its declared
+  Privacy SDK peer `0.14.3-rc.3`, packing both from source, and compiling the plugin adapter against
+  the emitted declarations. The bridge returns unbranded string key/address fields, so
+  `createStarkwarePrivacyBridgeEngine` performs the required runtime validation and type branding.
 
 ## Offmarket lesson
 

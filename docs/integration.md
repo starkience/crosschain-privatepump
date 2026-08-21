@@ -4,8 +4,10 @@
 
 The official bridge package is on GitHub Packages. Configure a token with `read:packages`, pin the
 bridge version, and initialize its testnet configuration before constructing this plugin. Inject
-`derivePolygonEoa`, `fundAccountFromPool`, and `returnToPool` as shown in
-[`packages/sdk/README.md`](../packages/sdk/README.md).
+`derivePolygonEoa`, `fundAccountFromPool`, and `returnToPool` through
+`createStarkwarePrivacyBridgeEngine` as shown in
+[`packages/sdk/README.md`](../packages/sdk/README.md). The wrapper validates the bridge's string
+address and private-key outputs before the client uses them.
 
 Never ask the user for a viewing key. The bridge's low-level SDK route is appropriate here because
 the application derives and holds its own key material from the identity signature. A pure Starknet
