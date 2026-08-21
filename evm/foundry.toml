@@ -1,0 +1,26 @@
+[profile.default]
+src = "src"
+test = "test"
+script = "script"
+out = "out"
+libs = ["dependencies", "lib"]
+remappings = ["forge-std/=dependencies/forge-std-1.11.0/src/"]
+solc_version = "0.8.30"
+optimizer = true
+optimizer_runs = 10000
+bytecode_hash = "none"
+cbor_metadata = false
+
+[dependencies]
+forge-std = { version = "1.11.0", git = "https://github.com/foundry-rs/forge-std.git", tag = "v1.11.0" }
+
+[fmt]
+line_length = 100
+tab_width = 4
+bracket_spacing = true
+
+[rpc_endpoints]
+base_sepolia = "${BASE_SEPOLIA_RPC_URL}"
+
+[etherscan]
+base_sepolia = { key = "${BASESCAN_API_KEY}", chain = 84532, url = "https://api-sepolia.basescan.org/api" }

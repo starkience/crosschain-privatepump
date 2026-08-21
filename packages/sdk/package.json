@@ -1,0 +1,32 @@
+{
+  "name": "@private-launchpad/sdk",
+  "version": "0.1.0",
+  "description": "Attach STRK20-backed private execution accounts to existing EVM launchpads.",
+  "license": "Apache-2.0",
+  "type": "module",
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "clean": "node -e \"require('node:fs').rmSync('dist',{recursive:true,force:true})\"",
+    "build": "pnpm clean && tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run",
+    "format:check": "prettier --check 'src/**/*.{ts,md}' README.md"
+  },
+  "dependencies": {
+    "viem": "^2.37.3"
+  },
+  "devDependencies": {
+    "@types/node": "^24.3.0",
+    "typescript": "^5.9.2",
+    "vitest": "^3.2.4"
+  }
+}

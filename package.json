@@ -1,0 +1,26 @@
+{
+  "name": "crosschain-private-launchpad",
+  "version": "0.1.0",
+  "private": true,
+  "license": "Apache-2.0",
+  "type": "module",
+  "packageManager": "pnpm@10.34.5",
+  "engines": {
+    "node": ">=24"
+  },
+  "scripts": {
+    "build": "pnpm --filter @private-launchpad/sdk build && pnpm --filter @private-launchpad/relayer build && pnpm build:evm",
+    "build:evm": "pnpm setup:evm && forge build --root evm",
+    "typecheck": "pnpm --filter @private-launchpad/sdk build && pnpm --filter @private-launchpad/relayer typecheck",
+    "test": "pnpm test:sdk && pnpm test:relayer && pnpm test:evm",
+    "test:sdk": "pnpm --filter @private-launchpad/sdk test",
+    "test:relayer": "pnpm --filter @private-launchpad/relayer test",
+    "test:evm": "pnpm setup:evm && forge test --root evm",
+    "setup:evm": "cd evm && forge soldeer install --config-location foundry",
+    "verify:sepolia": "node scripts/verify-sepolia.mjs",
+    "format:check": "pnpm --filter @private-launchpad/sdk format:check && pnpm --filter @private-launchpad/relayer format:check && forge fmt --root evm --check"
+  },
+  "devDependencies": {
+    "prettier": "^3.6.2"
+  }
+}

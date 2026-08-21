@@ -1,0 +1,46 @@
+{
+  "verifiedAt": "2026-08-21",
+  "baseSepolia": {
+    "chainId": 84532,
+    "block": 45765318,
+    "contracts": {
+      "usdc": {
+        "address": "0x036CbD53842c5426634e7929541eC2318f3dCF7e",
+        "runtimeCodeBytes": 1798
+      },
+      "cctpTokenMessengerV2": {
+        "address": "0x8FE6B999Dc680CcFDD5Bf7EB0974218be2542DAA",
+        "runtimeCodeBytes": 2175
+      },
+      "clankerV31Factory": {
+        "address": "0x2A787b2362021cC3eEa3C24C4748a6cD5B687382",
+        "runtimeCodeBytes": 17351,
+        "deprecated": false,
+        "maxCreatorReward": 80,
+        "tokenSupply": "100000000000000000000000000000"
+      }
+    }
+  },
+  "starknetSepolia": {
+    "chainId": "0x534e5f5345504f4c4941",
+    "block": 13807272,
+    "contracts": {
+      "strk20Pool": {
+        "address": "0x0254a6b2997ef52e9f830ce1f543f6b29768295e8d17e2267d672c552cfe0d91",
+        "classHash": "0x56ab118a8a6e38efc93ad758cefe909fee421fa931ce3cf72df624d345623b2"
+      },
+      "outboundAnonymizer": {
+        "address": "0x05b85f2ae4d47c1e661533d5832fe3e4afd4c6a9b52e54b7f873a00c9b285f4e",
+        "classHash": "0x16c16379538afa9e29ac32721e7c1588262e06c2d19fb9215e21e2a8a6c57e1"
+      },
+      "inboundAnonymizer": {
+        "address": "0x00d2a07c657d8c70f6eeddb7c8125e39b0955a40a608f63ca8a88d3ebbf72117",
+        "classHash": "0x533023c9011dc9ffe62f590e96f4077c8a48d499da43346893e3e58e6dbcdb8"
+      },
+      "usdc": {
+        "address": "0x0512feac6339ff7889822cb5aa2a86c848e9d392bb0e3e237c008674feed8343",
+        "classHash": "0x78a357382d29a07ab7e32c5ce3ffae20021abee67c353b8885737b1d643eac9"
+      }
+    }
+  }
+}

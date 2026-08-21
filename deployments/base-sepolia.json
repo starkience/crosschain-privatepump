@@ -1,0 +1,10 @@
+{
+  "network": "base-sepolia",
+  "chainId": 84532,
+  "status": "awaiting-deployer-key",
+  "factory": null,
+  "deploymentTransaction": null,
+  "deploymentBlock": null,
+  "compiler": "solc-0.8.30",
+  "optimizerRuns": 10000
+}

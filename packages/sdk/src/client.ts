@@ -1,0 +1,268 @@
+import { encodeFunctionData, type Address, type Hash, type Hex } from "viem";
+import {
+  privateLaunchpadAccountAbi,
+  privateLaunchpadAccountFactoryAbi,
+  erc20Abi,
+} from "./abi.js";
+import { signExecution } from "./execution.js";
+import {
+  NO_RELAYER_FEE,
+  type ExecuteOptions,
+  type BridgeFundResult,
+  type BridgeReturnResult,
+  type BridgeStepCallback,
+  type ExecutionCall,
+  type LaunchpadAdapter,
+  type PrivateLaunchpadClientConfig,
+  type PrivateLaunchpadSession,
+  type RelayExecutionRequest,
+  type RelayerFee,
+} from "./types.js";
+
+const DEFAULT_CHANNEL = "private-launchpad-v1";
+const DEFAULT_DEADLINE_SECONDS = 10 * 60;
+
+export class PrivateLaunchpadClient {
+  readonly config: PrivateLaunchpadClientConfig;
+  readonly channel: string;
+
+  constructor(config: PrivateLaunchpadClientConfig) {
+    if (!Number.isSafeInteger(config.chainId) || config.chainId <= 0) {
+      throw new Error("chainId must be a positive safe integer");
+    }
+    this.config = config;
+    this.channel = config.channel ?? DEFAULT_CHANNEL;
+  }
+
+  async deriveSession(
+    signature: string,
+    accountIndex: number,
+  ): Promise<PrivateLaunchpadSession> {
+    const derived = this.config.bridge.deriveEvmOwner(
+      signature,
+      accountIndex,
+      this.channel,
+    );
+    const owner = derived.address as Address;
+    const account = await this.config.publicClient.readContract({
+      address: this.config.factory,
+      abi: privateLaunchpadAccountFactoryAbi,
+      functionName: "computeAddress",
+      args: [owner, BigInt(accountIndex)],
+    });
+    return { accountIndex, channel: this.channel, owner, account };
+  }
+
+  async fundSession(args: {
+    signature: string;
+    accountIndex: number;
+    amount: bigint;
+    connectedEvmAddress: Address;
+    fast?: boolean;
+    onStep?: BridgeStepCallback;
+  }): Promise<BridgeFundResult> {
+    const session = await this.deriveSession(args.signature, args.accountIndex);
+    return this.config.bridge.fundAccountFromPool({
+      resolveSignature: async () => args.signature,
+      accountIndex: args.accountIndex,
+      amount: args.amount,
+      evmAddress: args.connectedEvmAddress,
+      resolveDepositWallet: async () => session.account,
+      destChainId: this.config.chainId,
+      channel: this.channel,
+      ...(args.fast === undefined ? {} : { fast: args.fast }),
+      ...(args.onStep === undefined ? {} : { onStep: args.onStep }),
+    });
+  }
+
+  async open<TOpenIntent, TCloseIntent>(args: {
+    signature: string;
+    session: PrivateLaunchpadSession;
+    adapter: LaunchpadAdapter<TOpenIntent, TCloseIntent>;
+    intent: TOpenIntent;
+    options?: ExecuteOptions;
+  }): Promise<Hash> {
+    this.assertAdapterChain(args.adapter);
+    const calls = await args.adapter.buildOpenCalls(args.intent, {
+      account: args.session.account,
+      publicClient: this.config.publicClient,
+    });
+    return this.execute(args.signature, args.session, calls, args.options);
+  }
+
+  async close<TOpenIntent, TCloseIntent>(args: {
+    signature: string;
+    session: PrivateLaunchpadSession;
+    adapter: LaunchpadAdapter<TOpenIntent, TCloseIntent>;
+    intent: TCloseIntent;
+    options?: ExecuteOptions;
+  }): Promise<Hash> {
+    this.assertAdapterChain(args.adapter);
+    const calls = await args.adapter.buildCloseCalls(args.intent, {
+      account: args.session.account,
+      publicClient: this.config.publicClient,
+    });
+    return this.execute(args.signature, args.session, calls, args.options);
+  }
+
+  async execute(
+    signature: string,
+    session: PrivateLaunchpadSession,
+    calls: readonly ExecutionCall[],
+    options: ExecuteOptions = {},
+  ): Promise<Hash> {
+    if (calls.length === 0)
+      throw new Error("cannot execute an empty call batch");
+    const request = await this.prepareRelayRequest(
+      signature,
+      session,
+      calls,
+      options,
+    );
+    return this.config.relay(request);
+  }
+
+  async returnSession(args: {
+    signature: string;
+    session: PrivateLaunchpadSession;
+    connectedEvmAddress: Address;
+    amount?: bigint;
+    fee?: RelayerFee;
+    onStep?: BridgeStepCallback;
+  }): Promise<BridgeReturnResult> {
+    const fee = args.fee ?? NO_RELAYER_FEE;
+    const readBalance = async (): Promise<bigint> =>
+      this.config.publicClient.readContract({
+        address: this.config.usdc,
+        abi: erc20Abi,
+        functionName: "balanceOf",
+        args: [args.session.account],
+      });
+
+    return this.config.bridge.returnToPool({
+      signature: args.signature,
+      accountIndex: args.session.accountIndex,
+      channel: args.session.channel,
+      evmAddress: args.connectedEvmAddress,
+      destChainId: this.config.chainId,
+      readReturnableBalance: readBalance,
+      prepareFreshReturn: async () => {
+        const balance = await readBalance();
+        const feeInUsdc =
+          fee.token.toLowerCase() === this.config.usdc.toLowerCase()
+            ? fee.amount
+            : 0n;
+        const maximum = balance > feeInUsdc ? balance - feeInUsdc : 0n;
+        const amount = args.amount ?? maximum;
+        if (amount <= 0n || amount > maximum) {
+          throw new Error(
+            `invalid return amount: maximum after relayer fee is ${maximum}`,
+          );
+        }
+
+        return {
+          amount,
+          depositWallet: args.session.account,
+          submitGaslessBatch: async (burnCalls) => {
+            const calls: ExecutionCall[] = burnCalls.map((call) => ({
+              target: call.target as Address,
+              value: 0n,
+              data: call.data,
+            }));
+            return this.execute(args.signature, args.session, calls, { fee });
+          },
+        };
+      },
+      ...(args.onStep === undefined ? {} : { onStep: args.onStep }),
+    });
+  }
+
+  encodeRelayCalldata(request: RelayExecutionRequest): Hex {
+    return encodeFunctionData({
+      abi: privateLaunchpadAccountFactoryAbi,
+      functionName: "deployAndExecute",
+      args: [
+        request.owner,
+        BigInt(request.accountIndex),
+        [...request.calls],
+        request.nonce,
+        request.deadline,
+        request.fee.token,
+        request.fee.amount,
+        request.fee.recipient,
+        request.signature,
+      ],
+    });
+  }
+
+  private async prepareRelayRequest(
+    signature: string,
+    session: PrivateLaunchpadSession,
+    calls: readonly ExecutionCall[],
+    options: ExecuteOptions,
+  ): Promise<RelayExecutionRequest> {
+    const derived = this.config.bridge.deriveEvmOwner(
+      signature,
+      session.accountIndex,
+      session.channel,
+    );
+    if (derived.address.toLowerCase() !== session.owner.toLowerCase()) {
+      throw new Error(
+        "signature does not control the selected private launchpad session",
+      );
+    }
+
+    const code = await this.config.publicClient.getBytecode({
+      address: session.account,
+    });
+    const nonce = code
+      ? await this.config.publicClient.readContract({
+          address: session.account,
+          abi: privateLaunchpadAccountAbi,
+          functionName: "nonce",
+        })
+      : 0n;
+    const deadlineSeconds = options.deadlineSeconds ?? DEFAULT_DEADLINE_SECONDS;
+    if (!Number.isSafeInteger(deadlineSeconds) || deadlineSeconds <= 0) {
+      throw new Error("deadlineSeconds must be a positive safe integer");
+    }
+    const deadline = BigInt(Math.floor(Date.now() / 1000) + deadlineSeconds);
+    const prefund = options.prefund ?? 0n;
+    const fee = options.fee ?? NO_RELAYER_FEE;
+    const privateKey = derived.privateKey as Hex;
+    const signedCalls = [...calls];
+    const relaySignature = await signExecution({
+      privateKey,
+      chainId: this.config.chainId,
+      account: session.account,
+      calls: signedCalls,
+      nonce,
+      deadline,
+      fee,
+      prefund,
+    });
+    return {
+      chainId: this.config.chainId,
+      factory: this.config.factory,
+      account: session.account,
+      owner: session.owner,
+      accountIndex: session.accountIndex,
+      calls: signedCalls,
+      nonce,
+      deadline,
+      prefund,
+      fee,
+      signature: relaySignature,
+    };
+  }
+
+  private assertAdapterChain(
+    adapter: LaunchpadAdapter<unknown, unknown>,
+  ): void {
+    if (adapter.chainId !== this.config.chainId) {
+      throw new Error(
+        `adapter ${adapter.id} targets chain ${adapter.chainId}, client targets ${this.config.chainId}`,
+      );
+    }
+  }
+}
