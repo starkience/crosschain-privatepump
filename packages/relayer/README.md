@@ -10,10 +10,12 @@ Required environment variables:
 - `RPC_URL`
 - `FACTORY_ADDRESS`
 - `RELAYER_PRIVATE_KEY`
+- `ALLOWED_TARGETS`
 
-Production deployments should also set `ALLOWED_TARGETS` to a comma-separated list containing the
-host launchpad, token contracts, swap router, Circle USDC, and Circle TokenMessenger used by the
-enabled flows. Set `RELAYER_FEE_TOKEN`, `RELAYER_FEE_AMOUNT`, and optionally
+`ALLOWED_TARGETS` is a comma-separated list containing the host launchpad, token contracts, swap
+router, Circle USDC, and Circle TokenMessenger used by the enabled flows. The relayer fails to start
+without it. `ALLOW_UNSAFE_ANY_TARGETS=true` disables this protection and is intended only for
+isolated local development. Set `RELAYER_FEE_TOKEN`, `RELAYER_FEE_AMOUNT`, and optionally
 `RELAYER_FEE_RECIPIENT` to collect a signed USDC fee. Request bodies, signatures, and derived account
 addresses must not be logged because a single operator observing both identity and venue traffic can
 weaken unlinkability.

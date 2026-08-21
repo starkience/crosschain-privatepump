@@ -65,11 +65,9 @@ export function validateStaticPolicy(
   let calldataBytes = 0;
   for (const call of request.calls) {
     calldataBytes += (call.data.length - 2) / 2;
-    if (call.target === ZERO_ADDRESS) throw new Error("zero call target");
-    if (
-      policy.allowedTargets &&
-      !policy.allowedTargets.has(call.target.toLowerCase())
-    ) {
+    const target = getAddress(call.target).toLowerCase();
+    if (target === ZERO_ADDRESS) throw new Error("zero call target");
+    if (policy.allowedTargets && !policy.allowedTargets.has(target)) {
       throw new Error(`target not allowed: ${call.target}`);
     }
   }
@@ -156,7 +154,10 @@ export function relayerFromEnv(
     "RELAYER_PRIVATE_KEY",
   );
   const relayerAccount = privateKeyToAccount(privateKey);
-  const feeAmount = BigInt(env.RELAYER_FEE_AMOUNT ?? "0");
+  const feeAmount = nonnegativeBigInt(
+    env.RELAYER_FEE_AMOUNT ?? "0",
+    "RELAYER_FEE_AMOUNT",
+  );
   const feeToken =
     feeAmount === 0n
       ? ZERO_ADDRESS
@@ -168,13 +169,16 @@ export function relayerFromEnv(
           env.RELAYER_FEE_RECIPIENT ?? relayerAccount.address,
           "RELAYER_FEE_RECIPIENT",
         );
-  const allowedTargets = env.ALLOWED_TARGETS
-    ? new Set(
-        env.ALLOWED_TARGETS.split(",").map((target) =>
-          requiredAddress(target.trim(), "ALLOWED_TARGETS").toLowerCase(),
-        ),
-      )
-    : undefined;
+  const allowedTargets = parseAllowedTargets(env.ALLOWED_TARGETS);
+  const allowUnsafeAnyTargets = optionalBoolean(
+    env.ALLOW_UNSAFE_ANY_TARGETS,
+    "ALLOW_UNSAFE_ANY_TARGETS",
+  );
+  if (!allowedTargets && !allowUnsafeAnyTargets) {
+    throw new Error(
+      "ALLOWED_TARGETS is required unless ALLOW_UNSAFE_ANY_TARGETS=true",
+    );
+  }
   const transport = http(rpcUrl);
   const publicClient = createPublicClient({ transport });
   const walletClient = createWalletClient({
@@ -196,7 +200,10 @@ export function relayerFromEnv(
         env.MAX_DEADLINE_SECONDS ?? "900",
         "MAX_DEADLINE_SECONDS",
       ),
-      maxPrefund: BigInt(env.MAX_PREFUND_WEI ?? "0"),
+      maxPrefund: nonnegativeBigInt(
+        env.MAX_PREFUND_WEI ?? "0",
+        "MAX_PREFUND_WEI",
+      ),
       ...(allowedTargets ? { allowedTargets } : {}),
     },
     { publicClient, walletClient, relayerAccount },
@@ -224,4 +231,32 @@ function positiveInt(value: string | undefined, name: string): number {
   if (!Number.isSafeInteger(parsed) || parsed <= 0)
     throw new Error(`${name} must be a positive integer`);
   return parsed;
+}
+
+function nonnegativeBigInt(value: string | undefined, name: string): bigint {
+  const parsed = required(value, name);
+  if (!/^(0|[1-9][0-9]*)$/.test(parsed)) {
+    throw new Error(`${name} must be a non-negative integer`);
+  }
+  return BigInt(parsed);
+}
+
+function optionalBoolean(value: string | undefined, name: string): boolean {
+  if (value === undefined || value === "") return false;
+  if (value === "true") return true;
+  if (value === "false") return false;
+  throw new Error(`${name} must be true or false`);
+}
+
+function parseAllowedTargets(
+  value: string | undefined,
+): ReadonlySet<string> | undefined {
+  if (value === undefined || value.trim() === "") return undefined;
+  return new Set(
+    value
+      .split(",")
+      .map((target) =>
+        requiredAddress(target.trim(), "ALLOWED_TARGETS").toLowerCase(),
+      ),
+  );
 }
