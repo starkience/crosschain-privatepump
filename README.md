@@ -66,7 +66,9 @@ their configured SDK client and host adapter.
 
 The official privacy-bridge package is currently served from GitHub Packages and requires a GitHub
 token with `read:packages`. It is injected into the SDK at application startup, so this repository
-can build without registry credentials and never forks bridge cryptography.
+can build without registry credentials and never forks bridge cryptography. When package access is
+unavailable, `pnpm build:official-bridge` builds an ignored, integrity-checked browser artifact from
+exact official commits and records its provenance.
 
 ## Sepolia
 

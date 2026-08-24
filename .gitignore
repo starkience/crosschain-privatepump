@@ -5,6 +5,7 @@
 node_modules/
 dist/
 coverage/
+apps/demo/public/vendor/
 
 # Foundry
 evm/cache/

@@ -22,6 +22,13 @@ bridge version, and initialize its testnet configuration before constructing thi
 [`packages/sdk/README.md`](../packages/sdk/README.md). The wrapper validates the bridge's string
 address and private-key outputs before the client uses them.
 
+If GitHub Packages authorization is unavailable, `pnpm build:official-bridge` provides a pinned
+source boundary rather than a fork: it fetches exact official SDK and bridge commits, builds with
+the upstream locks, validates the required exports, and emits an ignored browser bundle with a
+SHA-256 provenance manifest. `loadOfficialBridgeEngine` loads that local artifact. Review and update
+the pinned commits intentionally when upstream releases change; never follow a mutable branch in a
+production build.
+
 Never ask the user for a viewing key. The bridge's low-level SDK route is appropriate here because
 the application derives and holds its own key material from the identity signature. A pure Starknet
 Wallet API integration cannot control an EVM execution account or the reverse-CCTP signer.

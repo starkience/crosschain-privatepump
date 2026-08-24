@@ -66,4 +66,6 @@ the return-to-pool path.
 
 The bridge is injected because StarkWare currently distributes it through GitHub Packages. Pin the
 official package and its Starknet peer versions in the consuming application, then pass the three
-exports shown above. The plugin never vendors or forks bridge cryptography.
+exports shown above. The repository's optional `pnpm build:official-bridge` fallback compiles exact
+upstream commits into a local ignored browser artifact when package access is unavailable. The
+plugin never vendors or forks bridge cryptography.

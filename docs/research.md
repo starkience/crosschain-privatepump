@@ -21,6 +21,12 @@ Snapshot date: 2026-08-21. Revalidate before release.
   Privacy SDK peer `0.14.3-rc.3`, packing both from source, and compiling the plugin adapter against
   the emitted declarations. The bridge returns unbranded string key/address fields, so
   `createStarkwarePrivacyBridgeEngine` performs the required runtime validation and type branding.
+- Source-build compatibility was reverified on 2026-08-24 against bridge `v0.1.22`
+  (`3e95694b997069c47eff52cd576af0bb3e03612d`) and its declared Privacy SDK `0.14.3-rc.3`
+  (`efc61cbbdab5b714b5cf915f9735d88948e2ea82`). A clean build exposed `derivePolygonEoa`,
+  `fundAccountFromPool`, and `returnToPool`. `scripts/build-official-bridge.mjs` pins these commits
+  so the package-auth path has a source-provenance fallback without committing or modifying
+  upstream cryptography.
 
 ## Offmarket lesson
 
