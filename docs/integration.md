@@ -1,5 +1,18 @@
 # Host integration guide
 
+## Reference frontend
+
+`apps/demo` shows the intended host experience: the launch form stays venue-owned while a private
+mode adds identity, funding, relay, and return status alongside it. The checked-in app starts with
+`createDemoRuntime`, which never contacts a wallet and labels every generated address and hash as
+simulation data.
+
+For a real integration, construct `createLiveRuntime` with the configured
+`PrivateLaunchpadClient`, host adapter, wallet connection/signing callbacks, and a mapper from the
+host form values to its launch intent. The runtime retains the identity signature inside a closure;
+React state receives only the connected address and derived public session. Do not add that
+signature to global state, browser storage, analytics, error reporting, or logs.
+
 ## 1. Install and inject the bridge
 
 The official bridge package is on GitHub Packages. Configure a token with `read:packages`, pin the

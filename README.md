@@ -40,6 +40,7 @@ and the [integration guide](docs/integration.md).
 evm/                 deterministic execution account + Foundry tests/deploy script
 packages/sdk/        framework-agnostic plugin SDK
 packages/relayer/    minimal policy-enforcing EVM relayer
+apps/demo/            reference launchpad UI with explicit simulation/live runtime boundary
 docs/                architecture, privacy, launchpad research, deployment
 ```
 
@@ -57,6 +58,11 @@ pnpm typecheck
 pnpm test
 pnpm build
 ```
+
+Run `pnpm --filter @private-launchpad/demo dev` to open the reference integration frontend. Its
+default simulation mode never contacts a wallet and never presents sample bridge activity as a real
+transaction. Launchpad teams replace that runtime with the included `createLiveRuntime` binding to
+their configured SDK client and host adapter.
 
 The official privacy-bridge package is currently served from GitHub Packages and requires a GitHub
 token with `read:packages`. It is injected into the SDK at application startup, so this repository
