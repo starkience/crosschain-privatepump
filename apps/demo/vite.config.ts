@@ -5,5 +5,8 @@ export default defineConfig({
   plugins: [react()],
   server: { port: 4173 },
   preview: { port: 4173 },
-  test: { include: ["src/**/*.test.ts"] },
+  test: {
+    environment: "jsdom",
+    include: ["src/**/*.test.{ts,tsx}"],
+  },
 });
