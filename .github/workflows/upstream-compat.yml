@@ -22,6 +22,6 @@ jobs:
           cache: pnpm
       - run: pnpm install --frozen-lockfile
       - run: pnpm build:official-bridge
-      - run: pnpm --filter @private-launchpad/demo typecheck
+      - run: pnpm typecheck
       - run: pnpm --filter @private-launchpad/demo test
       - run: pnpm --filter @private-launchpad/demo build
