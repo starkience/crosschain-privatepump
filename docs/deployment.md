@@ -47,6 +47,12 @@ The prepared testnet deployer for this deployment is recorded in
 `deployments/base-sepolia.json`. At the recorded snapshot its Base Sepolia balance is zero, so
 broadcasting is intentionally blocked until it is faucet-funded.
 
+The deployer's nonce is also zero, which predicts factory address
+`0x4658cb93957af11A6FB83798c850B33A94700EBa`. Treat it as a prediction until the receipt is final;
+the live client independently refuses the address while it has no code. The deployment record pins
+the expected factory/account runtime byte lengths and code hashes produced by the recorded compiler
+and optimizer settings.
+
 Record the transaction, factory address, bytecode hash, compiler version, and block number in
 `deployments/base-sepolia.json`. Verify the source once a BaseScan API key is configured.
 

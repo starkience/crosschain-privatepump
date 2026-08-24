@@ -3,9 +3,15 @@
   "chainId": 84532,
   "status": "awaiting-deployer-funding",
   "deployer": "0xaDBf9a7D4708D1576c84Cc5A670158d27a62a89B",
+  "deployerNonce": 0,
+  "predictedFactoryAtNonce0": "0x4658cb93957af11A6FB83798c850B33A94700EBa",
   "factory": null,
   "deploymentTransaction": null,
   "deploymentBlock": null,
   "compiler": "solc-0.8.30",
-  "optimizerRuns": 10000
+  "optimizerRuns": 10000,
+  "expectedFactoryRuntimeBytes": 9317,
+  "expectedFactoryRuntimeCodeHash": "0x9ce5817d7d23aebb2fd609666ebf7f89e87292424bfcc288edf8bb4312ef0f5a",
+  "expectedAccountRuntimeBytes": 6538,
+  "expectedAccountRuntimeCodeHash": "0xf83bc4e1a46c460cb9905de4dd7718a8b81a7debc7b2c8ae1291495eb710152f"
 }
