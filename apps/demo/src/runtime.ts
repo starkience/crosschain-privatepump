@@ -34,7 +34,7 @@ export interface LaunchpadRuntime {
 
 export interface LiveRuntimeConfig<TOpenIntent, TCloseIntent> {
   appId: string;
-  accountIndex: number;
+  accountIndex: number | (() => Promise<number> | number);
   client: PrivateLaunchpadClient;
   adapter: LaunchpadAdapter<TOpenIntent, TCloseIntent>;
   connectWallet(): Promise<PrivateLaunchpadSession["account"]>;
@@ -69,6 +69,13 @@ export function createLiveRuntime<TOpenIntent, TCloseIntent>(
   return {
     mode: "live",
     async prepareIdentity() {
+      const accountIndex =
+        typeof config.accountIndex === "function"
+          ? await config.accountIndex()
+          : config.accountIndex;
+      if (!Number.isSafeInteger(accountIndex) || accountIndex < 0) {
+        throw new Error("account index must be a non-negative safe integer");
+      }
       connectedAddress = await config.connectWallet();
       identitySignature = await config.signIdentity({
         address: connectedAddress,
@@ -76,7 +83,7 @@ export function createLiveRuntime<TOpenIntent, TCloseIntent>(
       });
       session = await config.client.deriveSession(
         identitySignature,
-        config.accountIndex,
+        accountIndex,
       );
       return { connectedAddress, session };
     },

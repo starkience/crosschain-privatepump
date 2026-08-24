@@ -13,6 +13,12 @@ host form values to its launch intent. The runtime retains the identity signatur
 React state receives only the connected address and derived public session. Do not add that
 signature to global state, browser storage, analytics, error reporting, or logs.
 
+The reference app's `createBaseSepoliaLiveClient(import.meta.env)` wires the infrastructure side:
+Base RPC, deployed factory preflight, integrity-checked bridge initialization, and canonical HTTP
+relayer encoding. Pass that client into `createLiveRuntime`. Keep the adapter and wallet callbacks
+in host code, and resolve a non-secret monotonic account index from the host's position store rather
+than hard-coding index `0` for every launch.
+
 ## 1. Install and inject the bridge
 
 The official bridge package is on GitHub Packages. Configure a token with `read:packages`, pin the
@@ -25,9 +31,19 @@ address and private-key outputs before the client uses them.
 If GitHub Packages authorization is unavailable, `pnpm build:official-bridge` provides a pinned
 source boundary rather than a fork: it fetches exact official SDK and bridge commits, builds with
 the upstream locks, validates the required exports, and emits an ignored browser bundle with a
-SHA-256 provenance manifest. `loadOfficialBridgeEngine` loads that local artifact. Review and update
-the pinned commits intentionally when upstream releases change; never follow a mutable branch in a
-production build.
+SHA-256 provenance manifest. The authenticated surface includes the bridge's configuration
+initializer as well as its movement functions. Initialize it with
+`loadOfficialBridgeEngine({ environment: import.meta.env })`; the loader refuses to expose the
+engine unless the resolved route is the canonical STRK20 Sepolia pool and anonymizers → Base
+Sepolia CCTP domain 6, with an eligible OZ account class, AVNU paymaster, and same-origin
+RPC/prover/indexer paths. Review and update the pinned commits intentionally when upstream releases
+change; never follow a mutable branch in a production build.
+
+`apps/demo/vite.config.ts` provides development-only same-origin proxies. Copy `.env.example` to an
+ignored `.env.local` and supply the Starknet RPC, prover, indexer, and AVNU values there. The AVNU
+credential is server-side; the browser carries only `same-origin-proxy`. A production host must
+provide equivalent endpoints, use OHTTP for prover/discovery traffic, and overwrite the AVNU header
+at its edge. Do not put RPC credentials, a real paymaster key, or an admin private key in `VITE_*`.
 
 Never ask the user for a viewing key. The bridge's low-level SDK route is appropriate here because
 the application derives and holds its own key material from the identity signature. A pure Starknet
@@ -62,6 +78,12 @@ size, and optional target allowlist before simulation and broadcast.
 Production relayers need rate limiting, abuse controls, durable transaction-status tracking, and a
 separate privacy review. A thrown HTTP response is ambiguous after broadcast; poll the account nonce
 and chain receipt before asking the user to sign a replacement.
+
+Use `createHttpRelay({ endpoint })` for the browser transport. It applies the relayer's canonical
+decimal encoding to every bigint, refuses redirects and credential-bearing URLs, omits browser
+credentials/referrers, bounds the request, and validates the returned transaction hash. Prefer a
+same-origin endpoint; if the relayer is cross-origin, configure an exact CORS allowlist rather than
+`*` and retain the same no-redirect policy at the reverse proxy.
 
 ## 5. Return value
 

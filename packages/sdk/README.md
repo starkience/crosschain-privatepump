@@ -15,6 +15,7 @@ in browser memory and must never be logged or persisted.
 ```ts
 import {
   createPrivateLaunchpadIdentityMessage,
+  createHttpRelay,
   createStarkwarePrivacyBridgeEngine,
   PrivateLaunchpadClient,
   preparedCallsAdapter,
@@ -30,7 +31,7 @@ const plugin = new PrivateLaunchpadClient({
   factory: PRIVATE_ACCOUNT_FACTORY,
   usdc: BASE_SEPOLIA_USDC,
   publicClient,
-  relay: (request) => relayer.submit(request),
+  relay: createHttpRelay({ endpoint: "/api/private-launchpad/v1/relay" }),
   bridge: createStarkwarePrivacyBridgeEngine({
     derivePolygonEoa,
     fundAccountFromPool,

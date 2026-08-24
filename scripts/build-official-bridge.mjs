@@ -234,6 +234,9 @@ async function requireExecutable(path, help) {
 
 function validatePins(value) {
   const expectedExports = [
+    "bridgeEnvFromRecord",
+    "initBridgeConfig",
+    "getActiveConfig",
     "derivePolygonEoa",
     "fundAccountFromPool",
     "returnToPool",

@@ -5,4 +5,5 @@ export * from "./bridge.js";
 export * from "./client.js";
 export * from "./execution.js";
 export * from "./identity.js";
+export * from "./relay-http.js";
 export * from "./types.js";

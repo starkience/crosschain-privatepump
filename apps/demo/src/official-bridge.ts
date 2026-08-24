@@ -13,12 +13,77 @@ const expectedPins = {
   bridge: pins.bridge.commit,
 };
 
+const STARKNET_SEPOLIA_CHAIN_ID = "0x534e5f5345504f4c4941";
+const STRK20_SEPOLIA_POOL =
+  "0x254a6b2997ef52e9f830ce1f543f6b29768295e8d17e2267d672c552cfe0d91";
+const OUTBOUND_ANONYMIZER =
+  "0x05b85f2ae4d47c1e661533d5832fe3e4afd4c6a9b52e54b7f873a00c9b285f4e";
+const INBOUND_ANONYMIZER =
+  "0x00d2a07c657d8c70f6eeddb7c8125e39b0955a40a608f63ca8a88d3ebbf72117";
+const STARKNET_SEPOLIA_USDC =
+  "0x0512feac6339ff7889822cb5aa2a86c848e9d392bb0e3e237c008674feed8343";
+const BASE_SEPOLIA_USDC = "0x036cbd53842c5426634e7929541ec2318f3dcf7e";
+const BASE_SEPOLIA_CHAIN_ID = 84532;
+const BASE_CCTP_DOMAIN = 6;
+const OZ_ACCOUNT_CLASS =
+  "0x5b4b537eaa2399e3aa99c4e2e0208ebd6c71bc1467938cd52c798c601e43564";
+const PAYMASTER_PROXY_SENTINEL = "same-origin-proxy";
+
 interface OfficialBridgeManifest {
   schemaVersion: 1;
   module: string;
   sha256: string;
+  requiredExports: readonly string[];
   sdk: { commit: string };
   bridge: { commit: string };
+}
+
+interface OfficialBridgeEnvironment {
+  readonly dev?: boolean;
+  readonly prod?: boolean;
+  readonly vars: Readonly<Record<string, string | undefined>>;
+}
+
+interface OfficialBridgeChainConfig {
+  chainId: number;
+  domain: number;
+  usdc?: string;
+  usdcAddress?: string;
+}
+
+interface OfficialBridgeResolvedConfig {
+  network: string;
+  chainId: string;
+  poolAddress: string;
+  ozClassHash: string;
+  anonymizerAddress: string;
+  inboundAnonymizerAddress: string;
+  depositToken: { address: string };
+  paymaster?: { endpoint: string; apiKey: string };
+  cctp: {
+    starknetDomain: number;
+    defaultDestChainId: number;
+  };
+  evmCctpSources: Record<number, OfficialBridgeChainConfig>;
+  evmCctpDestinations: Record<number, OfficialBridgeChainConfig>;
+  rpcUrl: string;
+  proverUrl: string;
+  indexerUrl: string;
+}
+
+interface OfficialBridgeConfigurationExports {
+  bridgeEnvFromRecord(
+    source: Readonly<Record<string, unknown>>,
+    prefix: string,
+  ): OfficialBridgeEnvironment;
+  initBridgeConfig(environment: OfficialBridgeEnvironment): void;
+  getActiveConfig(): OfficialBridgeResolvedConfig;
+}
+
+export interface OfficialBridgeLoadOptions {
+  environment: Readonly<Record<string, unknown>>;
+  environmentPrefix?: string;
+  manifestUrl?: string;
 }
 
 export function validateOfficialBridgeManifest(
@@ -32,6 +97,8 @@ export function validateOfficialBridgeManifest(
     manifest.schemaVersion !== 1 ||
     manifest.module !== OFFICIAL_BRIDGE_MODULE_URL.split("/").at(-1) ||
     !/^[0-9a-f]{64}$/.test(manifest.sha256 ?? "") ||
+    JSON.stringify(manifest.requiredExports) !==
+      JSON.stringify(pins.requiredExports) ||
     manifest.sdk?.commit !== expectedPins.sdk ||
     manifest.bridge?.commit !== expectedPins.bridge
   ) {
@@ -61,9 +128,128 @@ export function validateOfficialBridgeModule(
   return module as unknown as StarkwarePrivacyBridgeExports;
 }
 
+export function validateOfficialBridgeConfigurationModule(
+  value: unknown,
+): OfficialBridgeConfigurationExports {
+  if (!value || typeof value !== "object") {
+    throw new Error("official privacy bridge configuration did not load");
+  }
+  const module = value as Record<string, unknown>;
+  for (const name of [
+    "bridgeEnvFromRecord",
+    "initBridgeConfig",
+    "getActiveConfig",
+  ] as const) {
+    if (typeof module[name] !== "function") {
+      throw new Error(
+        `official privacy bridge configuration is missing ${name}`,
+      );
+    }
+  }
+  return module as unknown as OfficialBridgeConfigurationExports;
+}
+
+export function configureOfficialBridgeForBaseSepolia(
+  value: unknown,
+  environment: Readonly<Record<string, unknown>>,
+  environmentPrefix = "VITE_",
+): StarkwarePrivacyBridgeExports {
+  const bridge = validateOfficialBridgeModule(value);
+  const configuration = validateOfficialBridgeConfigurationModule(value);
+  const networkKey = `${environmentPrefix}NETWORK`;
+  const destinationKey = `${environmentPrefix}CCTP_DEFAULT_DEST_CHAIN_ID`;
+  const network = environment[networkKey];
+  if (network !== undefined && network !== "testnet") {
+    throw new Error(`${networkKey} must be testnet`);
+  }
+  const destination = environment[destinationKey];
+  if (
+    destination !== undefined &&
+    destination !== String(BASE_SEPOLIA_CHAIN_ID)
+  ) {
+    throw new Error(`${destinationKey} must be ${BASE_SEPOLIA_CHAIN_ID}`);
+  }
+
+  const baseSepoliaEnvironment = {
+    ...environment,
+    [networkKey]: "testnet",
+    [destinationKey]: String(BASE_SEPOLIA_CHAIN_ID),
+  };
+  configuration.initBridgeConfig(
+    configuration.bridgeEnvFromRecord(
+      baseSepoliaEnvironment,
+      environmentPrefix,
+    ),
+  );
+  validateBaseSepoliaBridgeConfig(configuration.getActiveConfig());
+  return bridge;
+}
+
+export function validateBaseSepoliaBridgeConfig(
+  value: unknown,
+): OfficialBridgeResolvedConfig {
+  if (!value || typeof value !== "object") {
+    throw new Error(
+      "official privacy bridge did not resolve its configuration",
+    );
+  }
+  const config = value as Partial<OfficialBridgeResolvedConfig>;
+  const source = config.evmCctpSources?.[BASE_SEPOLIA_CHAIN_ID];
+  const destination = config.evmCctpDestinations?.[BASE_SEPOLIA_CHAIN_ID];
+  const same = (actual: string | undefined, expected: string) =>
+    actual?.toLowerCase() === expected;
+  if (
+    config.network !== "testnet" ||
+    config.chainId?.toLowerCase() !== STARKNET_SEPOLIA_CHAIN_ID ||
+    !same(config.poolAddress, STRK20_SEPOLIA_POOL) ||
+    !same(config.anonymizerAddress, OUTBOUND_ANONYMIZER) ||
+    !same(config.inboundAnonymizerAddress, INBOUND_ANONYMIZER) ||
+    !same(config.depositToken?.address, STARKNET_SEPOLIA_USDC) ||
+    !same(config.ozClassHash, OZ_ACCOUNT_CLASS) ||
+    config.cctp?.starknetDomain !== 25 ||
+    config.cctp?.defaultDestChainId !== BASE_SEPOLIA_CHAIN_ID ||
+    source?.chainId !== BASE_SEPOLIA_CHAIN_ID ||
+    source?.domain !== BASE_CCTP_DOMAIN ||
+    !same(source?.usdc, BASE_SEPOLIA_USDC) ||
+    destination?.chainId !== BASE_SEPOLIA_CHAIN_ID ||
+    destination?.domain !== BASE_CCTP_DOMAIN ||
+    !same(destination?.usdcAddress, BASE_SEPOLIA_USDC)
+  ) {
+    throw new Error(
+      "official privacy bridge configuration is not the canonical Base Sepolia route",
+    );
+  }
+  if (!config.paymaster?.endpoint || !config.paymaster.apiKey) {
+    throw new Error(
+      "official privacy bridge requires an AVNU paymaster for the live browser route",
+    );
+  }
+  if (
+    !config.paymaster.endpoint.startsWith("/") ||
+    config.paymaster.apiKey !== PAYMASTER_PROXY_SENTINEL
+  ) {
+    throw new Error(
+      "official privacy bridge AVNU requests must use the same-origin paymaster proxy",
+    );
+  }
+  for (const [name, url] of [
+    ["RPC", config.rpcUrl],
+    ["prover", config.proverUrl],
+    ["indexer", config.indexerUrl],
+  ] as const) {
+    if (!url || !url.startsWith("/")) {
+      throw new Error(
+        `official privacy bridge ${name} must use a same-origin privacy proxy`,
+      );
+    }
+  }
+  return config as OfficialBridgeResolvedConfig;
+}
+
 export async function loadOfficialBridgeEngine(
-  manifestUrl = OFFICIAL_BRIDGE_MANIFEST_URL,
+  options: OfficialBridgeLoadOptions,
 ): Promise<PrivacyBridgeEngine> {
+  const manifestUrl = options.manifestUrl ?? OFFICIAL_BRIDGE_MANIFEST_URL;
   const manifestResponse = await fetch(manifestUrl, { cache: "no-store" });
   if (!manifestResponse.ok) {
     throw new Error(
@@ -91,7 +277,11 @@ export async function loadOfficialBridgeEngine(
   try {
     const module: unknown = await import(/* @vite-ignore */ objectUrl);
     return createStarkwarePrivacyBridgeEngine(
-      validateOfficialBridgeModule(module),
+      configureOfficialBridgeForBaseSepolia(
+        module,
+        options.environment,
+        options.environmentPrefix,
+      ),
     );
   } finally {
     URL.revokeObjectURL(objectUrl);

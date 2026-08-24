@@ -43,7 +43,36 @@ const starknetContracts = {
     classHash:
       "0x533023c9011dc9ffe62f590e96f4077c8a48d499da43346893e3e58e6dbcdb8",
   },
+  usdc: {
+    address:
+      "0x0512feac6339ff7889822cb5aa2a86c848e9d392bb0e3e237c008674feed8343",
+    classHash:
+      "0x78a357382d29a07ab7e32c5ce3ffae20021abee67c353b8885737b1d643eac9",
+  },
+  cctpTokenMessengerV2: {
+    address:
+      "0x04bdde1e09a4b09a2f95d893d94a967b7717eb85a3f6deca8c080ee01fbc3370",
+    classHash:
+      "0x3de0c68dad6bab78275624542e25ffab0d4a80f5bfdfc19765d177746cb3c35",
+  },
+  cctpMessageTransmitterV2: {
+    address:
+      "0x04db7926c64f1f32a840f3fa95cb551f3801a3600bae87af87807a54dce12fe8",
+    classHash:
+      "0x1a82c735c08fb38dbc5b7b6e5f57973ad3a8fcf224a5f082fb9a7c8388f7ba1",
+  },
 };
+
+const ozAccountClassHash =
+  "0x5b4b537eaa2399e3aa99c4e2e0208ebd6c71bc1467938cd52c798c601e43564";
+const requiredAccountEntrypoints = [
+  "constructor",
+  "__execute__",
+  "__validate__",
+  "__validate_deploy__",
+  "execute_from_outside_v2",
+  "is_valid_signature",
+];
 
 const baseChain = await rpc(baseUrl, "eth_chainId", []);
 if (baseChain !== "0x14a34")
@@ -98,5 +127,37 @@ for (const [name, expected] of Object.entries(starknetContracts)) {
   }
   console.log(`${name}: ${classHash}`);
 }
+
+const accountClass = await rpc(starknetUrl, "starknet_getClass", {
+  block_id: "latest",
+  class_hash: ozAccountClassHash,
+});
+if (accountClass.contract_class_version !== "0.1.0") {
+  throw new Error(
+    `OZ account class version drifted to ${accountClass.contract_class_version}`,
+  );
+}
+const accountAbi =
+  typeof accountClass.abi === "string"
+    ? JSON.parse(accountClass.abi)
+    : accountClass.abi;
+const accountEntrypoints = new Set(
+  accountAbi.flatMap((item) => [
+    ...(typeof item.name === "string" ? [item.name] : []),
+    ...(Array.isArray(item.items)
+      ? item.items
+          .map((entry) => entry.name)
+          .filter((name) => typeof name === "string")
+      : []),
+  ]),
+);
+for (const name of requiredAccountEntrypoints) {
+  if (!accountEntrypoints.has(name)) {
+    throw new Error(`OZ account class is missing ${name}`);
+  }
+}
+console.log(
+  `ozAccountClass: ${ozAccountClassHash}, version 0.1.0, required ABI present`,
+);
 
 console.log("Sepolia dependency verification passed.");

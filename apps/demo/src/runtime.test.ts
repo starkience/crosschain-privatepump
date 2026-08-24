@@ -70,4 +70,33 @@ describe("live frontend runtime", () => {
       }),
     );
   });
+
+  it("resolves a fresh host-owned account index before prompting the wallet", async () => {
+    const events: string[] = [];
+    const client = {
+      deriveSession: vi.fn(async () => session),
+    } as unknown as PrivateLaunchpadClient;
+    const runtime = createLiveRuntime({
+      appId: "launch.example",
+      accountIndex: async () => {
+        events.push("index");
+        return 3;
+      },
+      client,
+      adapter: { id: "host", chainId: 84532 } as LaunchpadAdapter<
+        LaunchDraft,
+        never
+      >,
+      connectWallet: async () => {
+        events.push("wallet");
+        return address;
+      },
+      signIdentity: async () => "wallet-signature",
+      buildOpenIntent: (intent) => intent,
+    });
+
+    await runtime.prepareIdentity();
+    expect(events).toEqual(["index", "wallet"]);
+    expect(client.deriveSession).toHaveBeenCalledWith("wallet-signature", 3);
+  });
 });

@@ -10,12 +10,18 @@
 | Native Circle USDC                 | Starknet Sepolia | `0x0512feac6339ff7889822cb5aa2a86c848e9d392bb0e3e237c008674feed8343` |
 | CCTP TokenMessengerV2              | Starknet Sepolia | `0x04bdde1e09a4b09a2f95d893d94a967b7717eb85a3f6deca8c080ee01fbc3370` |
 | CCTP MessageTransmitterV2          | Starknet Sepolia | `0x04db7926c64f1f32a840f3fa95cb551f3801a3600bae87af87807a54dce12fe8` |
+| OZ account class hash              | Starknet Sepolia | `0x05b4b537eaa2399e3aa99c4e2e0208ebd6c71bc1467938cd52c798c601e43564` |
 | Base Sepolia chain / CCTP domain   | Base Sepolia     | `84532` / `6`                                                        |
 | Native Circle USDC                 | Base Sepolia     | `0x036CbD53842c5426634e7929541eC2318f3dCF7e`                         |
 | CCTP TokenMessengerV2              | Base Sepolia     | `0x8FE6B999Dc680CcFDD5Bf7EB0974218be2542DAA`                         |
 
 The Starknet contracts are canonical upstream deployments and are consumed, not redeployed. Verify
 their class hashes and the bridge release immediately before a public launch.
+
+The OZ account class above was queried at Starknet Sepolia block `13968540`: it is declared as
+contract-class version `0.1.0`, and its ABI exposes the constructor, account validation/execution,
+SRC-9 outside execution, signature validation, and interface detection used by the official bridge.
+It is public configuration, not an account address or secret.
 
 ## Deploy the EVM factory
 
@@ -53,8 +59,10 @@ contracts, routers, USDC, and Circle TokenMessenger.
 
 ## End-to-end gate
 
-1. Initialize upstream bridge-core on `testnet` with Starknet RPC, prover, indexer, an eligible OZ
-   account class hash, and AVNU paymaster configuration.
+1. Run `pnpm build:official-bridge`, then initialize upstream bridge-core on `testnet` with the
+   recorded OZ class hash, same-origin Starknet RPC/prover/indexer proxies, and an AVNU paymaster
+   proxy. `loadOfficialBridgeEngine({ environment: import.meta.env })` validates these before
+   exposing any movement function.
 2. Derive session index `0`; confirm the SDK prediction equals the factory's `computeAddress`.
 3. Shield test USDC and wait until its note is mature and visible at the proving base.
 4. Bridge a common denomination to Base Sepolia and confirm Circle mints to the counterfactual

@@ -1,6 +1,9 @@
 {
   "schemaVersion": 1,
   "requiredExports": [
+    "bridgeEnvFromRecord",
+    "initBridgeConfig",
+    "getActiveConfig",
     "derivePolygonEoa",
     "fundAccountFromPool",
     "returnToPool"

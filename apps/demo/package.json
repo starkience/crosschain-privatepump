@@ -17,7 +17,8 @@
     "@fontsource/ibm-plex-mono": "^5.2.6",
     "@private-launchpad/sdk": "workspace:*",
     "react": "^19.1.1",
-    "react-dom": "^19.1.1"
+    "react-dom": "^19.1.1",
+    "viem": "^2.37.3"
   },
   "devDependencies": {
     "@testing-library/react": "^16.3.0",
