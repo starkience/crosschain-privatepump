@@ -1,12 +1,13 @@
 # Reference frontend
 
-This Vite application demonstrates how an existing launchpad can add a private execution mode while
-keeping its current launch form, factory, quotes, and liquidity lifecycle. It starts in an explicit
-simulation mode: no wallet is contacted and every address or transaction hash shown by the flow is
-sample data.
+This Vite application is the Plank reference product. It includes a consumer-facing
+Private Balance, explicit public-edge deposit, Clanker V4 launch form, Uniswap buy/sell flow,
+position route, and return-to-balance state. It starts in preview mode: no wallet is contacted and
+every address or transaction hash is sample data.
 
-The production seam is `createLiveRuntime` in `src/runtime.ts`. A host injects its configured
-`PrivateLaunchpadClient`, launchpad adapter, wallet connection/signing callbacks, and intent mapper.
+The complete production binding is `createPrivateClankerLiveRuntime` in `src/clanker-live.ts`. It
+combines `createLiveRuntime`, the configured `PrivateLaunchpadClient`, current Clanker V4 adapter,
+server-keyed Uniswap trade adapter, injected EVM wallet, and form intent mappers.
 The runtime deliberately keeps the identity signature inside a closure so React state, browser
 storage, analytics, and logs never receive it.
 
@@ -25,7 +26,7 @@ pnpm build:official-bridge
 ```
 
 That command checks out the bridge and Privacy SDK source, uses the upstream dependency locks,
-builds both packages, validates the three exports consumed by this plugin, and writes an ignored
+builds both packages, validates the five movement/derivation exports consumed by this plugin, and writes an ignored
 browser bundle plus provenance manifest under `public/vendor`. The app can load it with
 `loadOfficialBridgeEngine({ environment: import.meta.env })`; no upstream source or generated
 cryptography is committed here. The loader initializes the upstream config and verifies the exact
@@ -39,6 +40,11 @@ normal package-bundled path when that CSP exception is undesirable.
 pnpm --filter @private-launchpad/demo dev
 ```
 
+The Vite server proxies privacy services, AVNU, Base RPC, the policy relayer, and Clanker quote route
+from the same origin. Copy `.env.example` to `.env.local`; keep preview mode until every live value
+is set. `UNISWAP_API_KEY` and `AVNU_PAYMASTER_API_KEY` stay server-side and must never use `VITE_`.
+
 Do not relabel the app as live until the Base account factory, relayer, official privacy bridge,
-proving service, discovery service, Circle attestation path, and host adapter have all passed the
-Sepolia verification runbook.
+proving service, discovery service, Circle attestation path, host adapter, and Base Sepolia Uniswap
+proxy route have all passed the Sepolia verification runbook. The live binding fails closed if the
+API returns an approval spender or swap target other than the configured proxy.

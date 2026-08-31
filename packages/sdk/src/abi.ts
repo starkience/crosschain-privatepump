@@ -32,6 +32,37 @@ export const privateLaunchpadAccountAbi = [
 ] as const;
 
 export const privateLaunchpadAccountFactoryAbi = [
+  { type: "error", name: "AlreadyExecuting", inputs: [] },
+  {
+    type: "error",
+    name: "CallFailed",
+    inputs: [
+      { name: "index", type: "uint256" },
+      { name: "reason", type: "bytes" },
+    ],
+  },
+  {
+    type: "error",
+    name: "DeadlineExpired",
+    inputs: [{ name: "deadline", type: "uint256" }],
+  },
+  { type: "error", name: "InvalidFee", inputs: [] },
+  {
+    type: "error",
+    name: "InvalidNonce",
+    inputs: [
+      { name: "expected", type: "uint256" },
+      { name: "provided", type: "uint256" },
+    ],
+  },
+  { type: "error", name: "InvalidOwner", inputs: [] },
+  { type: "error", name: "InvalidSignature", inputs: [] },
+  { type: "error", name: "OnlyOwner", inputs: [] },
+  {
+    type: "error",
+    name: "ZeroTarget",
+    inputs: [{ name: "index", type: "uint256" }],
+  },
   {
     type: "function",
     name: "computeAddress",
@@ -86,6 +117,16 @@ export const erc20Abi = [
     stateMutability: "nonpayable",
     inputs: [
       { name: "spender", type: "address" },
+      { name: "amount", type: "uint256" },
+    ],
+    outputs: [{ name: "", type: "bool" }],
+  },
+  {
+    type: "function",
+    name: "transfer",
+    stateMutability: "nonpayable",
+    inputs: [
+      { name: "recipient", type: "address" },
       { name: "amount", type: "uint256" },
     ],
     outputs: [{ name: "", type: "bool" }],

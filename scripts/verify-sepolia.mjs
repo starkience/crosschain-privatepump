@@ -117,6 +117,11 @@ const starknetChain = await rpc(starknetUrl, "starknet_chainId", []);
 if (starknetChain !== "0x534e5f5345504f4c4941") {
   throw new Error(`unexpected Starknet chain id ${starknetChain}`);
 }
+await rpc(starknetUrl, "starknet_getClassHashAt", {
+  block_id: "pre_confirmed",
+  contract_address: starknetContracts.strk20Pool.address,
+});
+console.log("starknetRpc: pre_confirmed reads supported");
 for (const [name, expected] of Object.entries(starknetContracts)) {
   const classHash = await rpc(starknetUrl, "starknet_getClassHashAt", [
     "latest",

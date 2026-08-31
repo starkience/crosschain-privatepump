@@ -19,11 +19,16 @@ public.
 
 ### Immediate AMM launch
 
-Clanker v3.1 deploys the token, creates a 1% Uniswap V3 pool, deposits single-sided token liquidity,
-locks the position NFT, and optionally performs an initial payable buy in one transaction. There is
-no pre-graduation curve. A private adapter can call the existing `deployToken` method, but an initial
-buy requires ETH; the account must first receive ETH through a signed swap/prefund step. Creator and
-interface reward recipients must point to unlinkable addresses or they reveal the creator.
+Clanker V4 deploys the token and initializes its Uniswap V4 pool with single-sided token positions.
+There is no pre-graduation curve. `clankerV4LaunchAdapter` asks the official Clanker SDK for the
+current `deployToken` transaction, forces token admin, vault recipient, and creator reward roles to
+the fresh account, and sends any configured builder share to the app's public builder address.
+
+STRK20 USDC is **not** Clanker's token-side launch liquidity. Clanker's own token allocation
+establishes the pool. Plank pairs new testnet launches directly with native Circle USDC and spends
+the fresh account's STRK20-funded budget on a separate, confirmed creator buy immediately after
+deployment. The integration omits Clanker's ETH dev-buy extension because the private balance is
+USDC.
 
 ### Fair-launch hook then continuous AMM
 

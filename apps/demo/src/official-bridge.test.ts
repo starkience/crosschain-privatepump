@@ -1,17 +1,26 @@
 import { describe, expect, it, vi } from "vitest";
 import {
   configureOfficialBridgeForBaseSepolia,
+  configureOfficialBridgeForPonsMainnet,
   validateBaseSepoliaBridgeConfig,
   validateOfficialBridgeConfigurationModule,
   validateOfficialBridgeManifest,
   validateOfficialBridgeModule,
+  validatePonsMainnetBridgeConfig,
 } from "./official-bridge.js";
 
 const requiredExports = [
   "bridgeEnvFromRecord",
   "initBridgeConfig",
   "getActiveConfig",
+  "readUndepositedResidual",
+  "deriveAccountNonce",
   "derivePolygonEoa",
+  "fetchForwardMaxFee",
+  "bridgeOut",
+  "sendPrivateToStarknet",
+  "moveIntoPool",
+  "cashOut",
   "fundAccountFromPool",
   "returnToPool",
 ];
@@ -26,7 +35,19 @@ const manifest = {
 };
 
 const bridgeFunctions = {
+  deriveStarknetPrivateKey: vi.fn(() => "0x1234"),
+  deriveStarknetAccount: vi.fn(() => ({ address: "0x5678" })),
+  deriveViewingKey: vi.fn(() => 1n),
+  deriveAccountNonce: vi.fn(() => 2n),
+  discoverPrivateBalanceForAddress: vi.fn(async () => 25_000_000n),
+  readUndepositedResidual: vi.fn(async () => 0n),
+  getActiveConfig: vi.fn(() => ({ ozClassHash: "0xclass" })),
   derivePolygonEoa: vi.fn(),
+  fetchForwardMaxFee: vi.fn(),
+  bridgeOut: vi.fn(),
+  sendPrivateToStarknet: vi.fn(),
+  moveIntoPool: vi.fn(),
+  cashOut: vi.fn(),
   fundAccountFromPool: vi.fn(),
   returnToPool: vi.fn(),
 };
@@ -69,6 +90,42 @@ function canonicalConfig() {
     rpcUrl: "/rpc/testnet",
     proverUrl: "/prover/testnet",
     indexerUrl: "/indexer/testnet",
+  };
+}
+
+function canonicalMainnetConfig() {
+  return {
+    ...canonicalConfig(),
+    network: "mainnet",
+    chainId: "0x534e5f4d41494e",
+    poolAddress:
+      "0x040337b1af3c663e86e333bab5a4b28da8d4652a15a69beee2b677776ffe812a",
+    anonymizerAddress:
+      "0x009067f35d2cab3cb933f3d78793660402026f8fa31e041ca2cab4a8e9a49092",
+    inboundAnonymizerAddress:
+      "0x03a7e7f34e530f8ec00b1ff7eaca90a136311d9da7cb17a73203f813b56c86cb",
+    depositToken: {
+      address:
+        "0x033068F6539f8e6e6b131e6B2B814e6c34A5224bC66947c47DaB9dFeE93b35fb",
+    },
+    cctp: { starknetDomain: 25, defaultDestChainId: 42161 },
+    evmCctpSources: {
+      42161: {
+        chainId: 42161,
+        domain: 3,
+        usdc: "0xaf88d065e77c8cC2239327C5EDb3A432268e5831",
+      },
+    },
+    evmCctpDestinations: {
+      42161: {
+        chainId: 42161,
+        domain: 3,
+        usdcAddress: "0xaf88d065e77c8cC2239327C5EDb3A432268e5831",
+      },
+    },
+    rpcUrl: "/rpc/mainnet",
+    proverUrl: "/prover/mainnet",
+    indexerUrl: "/indexer/mainnet",
   };
 }
 
@@ -136,6 +193,33 @@ describe("official bridge runtime loader", () => {
       "VITE_",
     );
     expect(initBridgeConfig).toHaveBeenCalledOnce();
+  });
+
+  it("forces and validates the canonical STRK20 mainnet to Arbitrum route", () => {
+    const bridgeEnvFromRecord = vi.fn(() => ({ dev: true, vars: {} }));
+    const module = {
+      ...bridgeFunctions,
+      bridgeEnvFromRecord,
+      initBridgeConfig: vi.fn(),
+      getActiveConfig: vi.fn(canonicalMainnetConfig),
+    };
+    expect(
+      configureOfficialBridgeForPonsMainnet(module, {
+        DEV: true,
+        VITE_OZ_ACCOUNT_CLASS_HASH_MAINNET: "0x1234",
+      }),
+    ).toBe(module);
+    expect(bridgeEnvFromRecord).toHaveBeenCalledWith(
+      expect.objectContaining({
+        VITE_NETWORK: "mainnet",
+        VITE_CCTP_FAST: "true",
+        VITE_CCTP_DEFAULT_DEST_CHAIN_ID: "42161",
+      }),
+      "VITE_",
+    );
+    expect(validatePonsMainnetBridgeConfig(canonicalMainnetConfig())).toEqual(
+      canonicalMainnetConfig(),
+    );
   });
 
   it("fails closed on a non-Base or non-paymaster bridge configuration", () => {

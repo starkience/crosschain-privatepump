@@ -1,0 +1,596 @@
+/*
+ * Authoritative small-screen layer. This file is imported after the desktop
+ * theme so mobile geometry cannot be undone by later component declarations.
+ */
+
+.pons-process-icon {
+  display: none;
+}
+
+@media (max-width: 680px) {
+  html,
+  body,
+  #root,
+  .clanker-page {
+    width: 100%;
+    max-width: 100%;
+    overflow-x: clip;
+  }
+
+  html {
+    scroll-padding-bottom: calc(78px + env(safe-area-inset-bottom, 0px));
+  }
+
+  body {
+    overscroll-behavior-x: none;
+  }
+
+  button,
+  a {
+    touch-action: manipulation;
+  }
+
+  .clanker-page {
+    min-height: 100dvh;
+    padding-bottom: calc(78px + env(safe-area-inset-bottom, 0px));
+  }
+
+  .pons-nav.top-nav {
+    height: calc(58px + env(safe-area-inset-top, 0px));
+    min-height: calc(58px + env(safe-area-inset-top, 0px));
+    padding-top: env(safe-area-inset-top, 0px);
+    border-bottom: 0;
+    background: color-mix(in srgb, var(--background) 88%, transparent);
+    box-shadow: 0 10px 28px
+      color-mix(in srgb, var(--background) 52%, transparent);
+  }
+
+  .pons-nav-inner {
+    grid-template-columns: minmax(0, 1fr) auto;
+    gap: 10px;
+    width: calc(100% - 28px);
+    max-width: 100%;
+    height: 58px;
+    min-height: 58px;
+  }
+
+  .pons-brand {
+    min-width: 0;
+  }
+
+  .pons-brand-copy {
+    display: block;
+    max-width: 100%;
+    overflow: hidden;
+    font-family: inherit;
+    font-size: 16px;
+    font-weight: 400;
+    line-height: 1;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .pons-product-nav,
+  .pons-private-balance,
+  .pons-deposit-nav,
+  .pons-nav-actions .nav-icon {
+    display: none;
+  }
+
+  .pons-nav-actions.nav-actions {
+    gap: 7px;
+    min-width: 0;
+  }
+
+  .pons-process-nav,
+  .pons-nav-actions .wallet-preview,
+  .pons-nav-actions .wallet-connect {
+    position: relative;
+    display: grid;
+    place-items: center;
+    width: 44px;
+    min-width: 44px;
+    height: 44px;
+    min-height: 44px;
+    padding: 0;
+    border-radius: 14px;
+    font-size: 0;
+    line-height: 1;
+  }
+
+  .pons-process-icon {
+    display: block;
+    color: var(--foreground-secondary);
+  }
+
+  .pons-process-nav > i {
+    position: absolute;
+    top: 8px;
+    right: 8px;
+    width: 6px;
+    height: 6px;
+    border: 1px solid var(--surface);
+  }
+
+  .pons-process-label,
+  .pons-nav-actions .wallet-preview span,
+  .pons-nav-actions .wallet-connect span {
+    display: none;
+  }
+
+  .pons-nav-actions .wallet-preview,
+  .pons-nav-actions .wallet-connect[data-connected="false"] {
+    border-color: var(--border-strong);
+    background: var(--surface);
+    color: var(--foreground);
+  }
+
+  .pons-nav-actions .wallet-connect-icon {
+    display: block;
+    margin: 0;
+  }
+
+  .page-content,
+  .terminal-shell,
+  .pons-explore-shell,
+  .pons-explore,
+  .pons-search-row,
+  .pons-market-panel,
+  .pons-market-grid,
+  .pons-market-card,
+  .pons-market-card > *,
+  .pons-market-copy,
+  .pons-market-name,
+  .pons-market-value,
+  .pons-market-meta {
+    min-width: 0;
+    max-width: 100%;
+  }
+
+  .page-content {
+    width: calc(100% - 28px);
+  }
+
+  .pons-explore {
+    gap: 14px;
+    padding: 18px 0 28px;
+  }
+
+  .pons-search-row {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 8px;
+    width: 100%;
+  }
+
+  .pons-market-search {
+    width: 100%;
+    min-height: 50px;
+    padding: 0 15px;
+    border-radius: 15px;
+  }
+
+  .pons-market-search input {
+    width: 100%;
+    min-width: 0;
+    font-size: 16px;
+  }
+
+  .pons-market-search kbd {
+    display: none;
+  }
+
+  .pons-create-button {
+    width: 100%;
+    min-width: 0;
+    min-height: 46px;
+    border-radius: 14px;
+  }
+
+  .pons-market-panel {
+    gap: 16px;
+    width: 100%;
+    padding: 16px;
+    border-radius: 20px;
+    overflow: hidden;
+    box-shadow: 0 18px 48px rgba(0, 0, 0, 0.18);
+  }
+
+  .pons-market-toolbar,
+  .pons-chart-head {
+    align-items: stretch;
+    gap: 12px;
+    flex-direction: column;
+  }
+
+  .pons-market-title-row {
+    gap: 8px;
+  }
+
+  .pons-market-toolbar :is(h1, h2) {
+    font-size: 22px;
+    line-height: 1.08;
+  }
+
+  .pons-market-toolbar p {
+    margin-top: 5px;
+    font-size: 11px;
+    line-height: 1.45;
+  }
+
+  .pons-market-filters {
+    display: flex;
+    width: calc(100% + 4px);
+    margin-inline: -2px;
+    padding: 2px 2px 5px;
+    overflow-x: auto;
+    flex-wrap: nowrap;
+    justify-content: flex-start;
+    overscroll-behavior-x: contain;
+    scrollbar-width: none;
+  }
+
+  .pons-market-filters::-webkit-scrollbar,
+  .pons-filter-pills::-webkit-scrollbar,
+  .pons-chart-ranges::-webkit-scrollbar {
+    display: none;
+  }
+
+  .pons-market-filters .pons-filter-pills {
+    flex: 0 0 auto;
+    max-width: none;
+    overflow: visible;
+  }
+
+  .pons-filter-pills button,
+  .pons-chart-ranges button {
+    flex: 0 0 auto;
+    min-height: 38px;
+    white-space: nowrap;
+  }
+
+  .pons-market-grid {
+    width: 100%;
+    gap: 9px;
+  }
+
+  .pons-market-card {
+    width: 100%;
+    overflow: hidden;
+    border-color: color-mix(in srgb, var(--border) 78%, transparent);
+    background: color-mix(in srgb, var(--surface-muted) 86%, var(--surface));
+  }
+
+  .pons-market-name b,
+  .pons-market-name small,
+  .pons-market-meta small {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .pons-market-value {
+    overflow-wrap: anywhere;
+  }
+
+  .pons-graduated-value {
+    min-height: 0;
+    line-height: 1.28;
+  }
+
+  .pons-market-meta {
+    overflow: hidden;
+  }
+
+  .pons-market-meta small:first-child {
+    flex: 1 1 auto;
+  }
+
+  .pons-market-meta small:last-child {
+    flex: 0 0 auto;
+  }
+
+  .pons-private-note {
+    padding: 13px 15px;
+    border-radius: 16px;
+    font-size: 11px;
+  }
+
+  .pons-mobile-dock {
+    bottom: max(7px, env(safe-area-inset-bottom, 0px));
+    gap: 3px;
+    width: calc(100% - 18px);
+    max-width: 440px;
+    padding: 5px;
+    border-radius: 20px;
+  }
+
+  .pons-mobile-dock button {
+    grid-template-rows: 19px auto;
+    min-height: 50px;
+    padding: 5px 2px 4px;
+    border-radius: 15px;
+    font-size: 10px;
+  }
+
+  .pons-mobile-dock button[data-active="true"] {
+    background: color-mix(in srgb, var(--purple) 20%, var(--surface));
+  }
+
+  .pons-token-page {
+    gap: 12px;
+    padding: 16px 0 28px;
+  }
+
+  .pons-about-strip,
+  .pons-buy-card,
+  .pons-market-chart,
+  .pons-activity-card {
+    padding: 16px;
+    border-radius: 20px;
+  }
+
+  .pons-about-strip dl {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .pons-buy-card .swap-box {
+    min-height: 122px;
+    padding: 14px;
+  }
+
+  .pons-buy-card .swap-box input,
+  .pons-buy-card .swap-box strong {
+    font-size: clamp(28px, 9vw, 37px);
+  }
+
+  .pons-buy-card .action-button,
+  .pons-buy-card .complete-actions .button {
+    min-height: 54px;
+    border-radius: 16px;
+  }
+
+  .pons-market-chart {
+    min-height: 430px;
+  }
+
+  .pons-chart-stage {
+    min-height: 260px;
+  }
+
+  .pons-launch-workspace {
+    min-height: 0;
+    padding: 14px 0 28px;
+  }
+
+  .pons-launch-shell {
+    min-height: 0;
+    border-radius: 20px;
+  }
+
+  .pons-launch-preview-stage {
+    display: none;
+  }
+
+  .pons-launch-form {
+    padding: 22px 16px 20px;
+  }
+
+  .pons-launch-field > input,
+  .pons-launch-field > textarea,
+  .pons-launch-buy-field input,
+  .pons-buy-card .token-address-field .input,
+  .transfer-modal input,
+  .destination-input,
+  .transaction-track-form input {
+    font-size: 16px;
+  }
+
+  .pons-launch-field > input,
+  .pons-launch-asset-select {
+    min-height: 48px;
+    border-radius: 13px;
+  }
+
+  .pons-launch-submit {
+    min-height: 56px;
+    border-radius: 16px;
+  }
+
+  .portfolio-workspace {
+    padding: 24px 0 30px;
+  }
+
+  .portfolio-masthead {
+    gap: 18px;
+    margin-bottom: 20px;
+  }
+
+  .portfolio-masthead h1 {
+    font-size: clamp(38px, 12vw, 54px);
+  }
+
+  .portfolio-masthead-buttons {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .portfolio-refresh,
+  .portfolio-position-actions .button,
+  .portfolio-empty-shell .button {
+    min-height: 44px;
+    border-radius: 14px;
+  }
+
+  .portfolio-summary {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .portfolio-summary > div,
+  .portfolio-summary > div:first-child,
+  .portfolio-summary > div:last-child,
+  .portfolio-summary > div:nth-child(2n),
+  .portfolio-summary > div:nth-last-child(-n + 2) {
+    padding: 15px 12px;
+    border-right: 1px solid var(--border);
+    border-bottom: 1px solid var(--border);
+  }
+
+  .portfolio-summary > div:nth-child(2n) {
+    border-right: 0;
+  }
+
+  .portfolio-summary > div:nth-last-child(-n + 2) {
+    border-bottom: 0;
+  }
+
+  .modal-backdrop {
+    align-items: flex-end;
+    padding: 0;
+  }
+
+  .deposit-modal,
+  .transfer-modal {
+    width: 100%;
+    max-width: none;
+    max-height: calc(100dvh - env(safe-area-inset-top, 0px) - 8px);
+    padding: 24px 18px calc(20px + env(safe-area-inset-bottom, 0px));
+    overflow-y: auto;
+    overscroll-behavior: contain;
+    border-right: 0;
+    border-bottom: 0;
+    border-left: 0;
+    border-radius: 26px 26px 0 0;
+  }
+
+  .modal-close {
+    top: 13px;
+    right: 13px;
+    width: 44px;
+    height: 44px;
+    border-radius: 50%;
+  }
+
+  .transfer-configuration {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .transfer-modal > .action-button {
+    min-height: 54px;
+    border-radius: 16px;
+  }
+
+  .transaction-monitor {
+    top: auto;
+    right: 7px;
+    bottom: max(7px, env(safe-area-inset-bottom, 0px));
+    width: calc(100vw - 14px);
+    max-width: none;
+    max-height: calc(100dvh - 14px - env(safe-area-inset-top, 0px));
+    border-radius: 22px;
+  }
+
+  .transaction-monitor-header button,
+  .transaction-track-form input,
+  .transaction-track-form button {
+    min-height: 44px;
+  }
+}
+
+@media (max-width: 560px) {
+  .pons-market-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .pons-market-card {
+    display: grid;
+    grid-template-columns: 92px minmax(0, 1fr);
+    min-height: 108px;
+    padding: 7px;
+    border-radius: 16px;
+  }
+
+  .pons-market-art {
+    align-self: stretch;
+    width: 92px;
+    max-width: 100%;
+    aspect-ratio: 1;
+    border-radius: 12px;
+  }
+
+  .pons-market-copy {
+    align-content: center;
+    gap: 5px;
+    padding: 6px 5px 6px 10px;
+    overflow: hidden;
+  }
+
+  .pons-market-name b {
+    font-size: 14px;
+  }
+
+  .pons-market-value {
+    font-size: 15px;
+  }
+
+  .pons-market-badges {
+    top: 6px;
+    left: 6px;
+  }
+
+  .pons-market-badges i {
+    padding: 2px 5px;
+    font-size: 7px;
+  }
+}
+
+@media (max-width: 360px) {
+  .page-content,
+  .pons-nav-inner {
+    width: calc(100% - 20px);
+  }
+
+  .pons-brand-copy {
+    font-size: 15px;
+  }
+
+  .pons-market-panel {
+    padding: 12px;
+  }
+
+  .pons-market-card {
+    grid-template-columns: 82px minmax(0, 1fr);
+    min-height: 98px;
+  }
+
+  .pons-market-art {
+    width: 82px;
+  }
+
+  .portfolio-masthead-buttons,
+  .portfolio-summary {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .pons-mobile-dock {
+    width: calc(100% - 10px);
+  }
+}
+
+@media (prefers-reduced-transparency: reduce) {
+  .pons-nav.top-nav,
+  .pons-mobile-dock,
+  .transaction-monitor {
+    background: var(--surface);
+    backdrop-filter: none;
+  }
+}
+
+@media (prefers-contrast: more) {
+  .pons-nav.top-nav,
+  .pons-mobile-dock,
+  .transaction-monitor {
+    border-color: var(--foreground-muted);
+    background: var(--surface);
+  }
+}

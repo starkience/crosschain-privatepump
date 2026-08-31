@@ -22,7 +22,8 @@
     "format:check": "prettier --check 'src/**/*.{ts,md}' README.md"
   },
   "dependencies": {
-    "viem": "^2.37.3"
+    "clanker-sdk": "4.2.18",
+    "viem": "^2.38.3"
   },
   "devDependencies": {
     "@types/node": "^24.3.0",

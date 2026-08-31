@@ -25,11 +25,21 @@ const request: RelayExecutionRequest = {
     recipient: "0x0000000000000000000000000000000000000000",
   },
   signature: `0x${"11".repeat(65)}`,
+  relayRequestId: `0x${"aa".repeat(32)}`,
 };
 
 describe("relayer request boundary", () => {
   it("round-trips bigint fields through JSON", () => {
     expect(parseRelayRequest(relayRequestJson(request))).toEqual(request);
+  });
+
+  it("rejects malformed Relay request IDs", () => {
+    expect(() =>
+      parseRelayRequest({
+        ...relayRequestJson(request),
+        relayRequestId: "quote-1",
+      }),
+    ).toThrow(/32-byte hex/);
   });
 
   it("enforces target allowlists and deadlines", () => {

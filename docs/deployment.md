@@ -14,6 +14,9 @@
 | Base Sepolia chain / CCTP domain   | Base Sepolia     | `84532` / `6`                                                        |
 | Native Circle USDC                 | Base Sepolia     | `0x036CbD53842c5426634e7929541eC2318f3dCF7e`                         |
 | CCTP TokenMessengerV2              | Base Sepolia     | `0x8FE6B999Dc680CcFDD5Bf7EB0974218be2542DAA`                         |
+| Uniswap V4 PoolManager             | Base Sepolia     | `0x05E73354cFDd6745C338b50BcFDfA3Aa6fA03408`                         |
+| Uniswap V4Quoter                   | Base Sepolia     | `0x4A6513c898fe1B2d0E78d3b0e0A4a151589B1cBa`                         |
+| Plank V4 exact-input helper        | Base Sepolia     | `0x63311261bc9eAe8c568418345C769ED3bf11154E`                         |
 
 The Starknet contracts are canonical upstream deployments and are consumed, not redeployed. Verify
 their class hashes and the bridge release immediately before a public launch.
@@ -43,15 +46,12 @@ forge script evm/script/Deploy.s.sol:Deploy \
   --broadcast
 ```
 
-The prepared testnet deployer for this deployment is recorded in
-`deployments/base-sepolia.json`. At the recorded snapshot its Base Sepolia balance is zero, so
-broadcasting is intentionally blocked until it is faucet-funded.
+The funded testnet deployer for this deployment is recorded in
+`deployments/base-sepolia.json`.
 
-The deployer's nonce is also zero, which predicts factory address
-`0x4658cb93957af11A6FB83798c850B33A94700EBa`. Treat it as a prediction until the receipt is final;
-the live client independently refuses the address while it has no code. The deployment record pins
-the expected factory/account runtime byte lengths and code hashes produced by the recorded compiler
-and optimizer settings.
+The factory is deployed at `0xe674451F7D7067DF01Dd9A7109d9a47c6BAb620A` in Base Sepolia block
+`45907786`. The deployment record pins its transaction, factory/account runtime byte lengths, and
+code hashes produced by the recorded compiler and optimizer settings.
 
 Record the transaction, factory address, bytecode hash, compiler version, and block number in
 `deployments/base-sepolia.json`. Verify the source once a BaseScan API key is configured.
@@ -63,18 +63,28 @@ Fund a separate relayer key with Base Sepolia ETH. Set `CHAIN_ID=84532`, `RPC_UR
 public deployment, set a USDC fee and an `ALLOWED_TARGETS` list covering only approved hosts, token
 contracts, routers, USDC, and Circle TokenMessenger.
 
+Uniswap's hosted Trading API does not return routes for Base Sepolia. Testnet quotes therefore read
+the canonical PoolKey from Clanker's locker and simulate it against the deployed V4Quoter. Execution
+uses Plank's exact-input helper above. The helper pulls only from its caller, enforces minimum output,
+and returns output only to that same caller. Keep it in `BASE_SEPOLIA_V4_SWAP_HELPER_ADDRESS`,
+`UNISWAP_PROXY_ADDRESS` (the policy's bounded approval target), and `ALLOWED_TARGETS`.
+
+Plank-launched test tokens are paired directly with native Base Sepolia USDC. Older WETH-paired test
+tokens intentionally fail with a clear error instead of inventing an unavailable USDC route. Base
+mainnet continues to use the hosted Trading API and its separately configured approved proxy.
+
 ## End-to-end gate
 
 1. Run `pnpm build:official-bridge`, then initialize upstream bridge-core on `testnet` with the
    recorded OZ class hash, same-origin Starknet RPC/prover/indexer proxies, and an AVNU paymaster
    proxy. `loadOfficialBridgeEngine({ environment: import.meta.env })` validates these before
    exposing any movement function.
-2. Derive session index `0`; confirm the SDK prediction equals the factory's `computeAddress`.
-3. Shield test USDC and wait until its note is mature and visible at the proving base.
+2. Deposit test USDC with `moveIntoPool` and wait until its note is mature and visible at the proving base.
+3. Derive a fresh non-zero session index; confirm the SDK prediction equals the factory's `computeAddress`.
 4. Bridge a common denomination to Base Sepolia and confirm Circle mints to the counterfactual
    account.
-5. Relay a host testnet call and verify the factory deploys the predicted account, nonce increments,
-   and the asset is received.
+5. Relay a Clanker V4 launch and verify the factory deploys the predicted account, nonce increments,
+   token admin/rewards point to it, and the expected token is created.
 6. Sell/convert to native USDC, relay the CCTP return, obtain the attestation, and verify the inbound
    anonymizer creates a spendable STRK20 note after maturity.
 7. Confirm no root address, signature, viewing key, derived private key, or exact activity payload is

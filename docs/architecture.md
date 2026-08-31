@@ -8,10 +8,20 @@ slippage, migration/graduation, liquidity, and rewards. Privacy is an execution 
 
 ## End-to-end flow
 
+The numbered flow below is the generic direct-CCTP path used by CCTP-native EVM hosts. PrivatePons
+uses the same account and authorization model but composes Relay around CCTP because Robinhood is
+not a Circle domain:
+
+```text
+Robinhood USDG ↔ Relay ↔ Arbitrum USDC ↔ Circle CCTP ↔ STRK20
+```
+
+For the Pons-specific deposit, funding, and S2 return flows, see `private-pons-relay.md`.
+
 1. The connected EVM wallet signs one app-bound, versioned identity message. The signature stays in
    memory. StarkWare's bridge derives a Starknet account key, STRK20 viewing key, and a domain-
    separated EVM owner key.
-2. USDC enters Starknet through Circle CCTP and is deposited into STRK20. The deposit address,
+2. `moveIntoPool` sends EVM USDC through Circle CCTP and deposits it into STRK20. The deposit address,
    token, amount, and time are public and screened. Note ownership and later pool movement are
    private.
 3. For every launch or position, the SDK selects a new account index. The derived EVM owner and
@@ -27,6 +37,8 @@ slippage, migration/graduation, liquidity, and rewards. Privacy is an execution 
 8. Once proceeds are native USDC, StarkWare's return flow builds the Circle burn calls. The account
    signs and relays them. On Starknet, the inbound anonymizer's `privacy_compute` binds the attested
    CCTP message to the authenticated pool identity and atomically mints into a new open note.
+9. When the user withdraws from Private Balance, `cashOut` burns a selected private amount and
+   resumes Circle attestation/mint to the chosen public EVM destination if the page is interrupted.
 
 ## Why a deterministic smart account
 
@@ -45,8 +57,9 @@ new account index because all activity from one account is publicly linkable.
   return-to-pool.
 - The bridge engine is injected from `@starkware-libs/starknet-privacy-bridge`; this project does not
   copy its key derivation, proof, discovery, CCTP parsing, or Cairo contracts.
-- A host adapter owns host-specific call construction and receipt parsing. It should reuse the host's
-  official SDK where one exists.
+- The Clanker adapter uses the official V4 SDK. On mainnet, the trade adapter uses Uniswap's API
+  through a same-origin route. On Base Sepolia, the server reads Clanker's PoolKey, uses Uniswap's
+  deployed V4Quoter, and targets the narrowly scoped Plank swap helper.
 - The relayer verifies static policy and the owner signature, simulates, then broadcasts. It cannot
   change signed calls or fees.
 

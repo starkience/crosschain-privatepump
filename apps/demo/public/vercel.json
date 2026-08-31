@@ -1,0 +1,124 @@
+{
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "framework": null,
+  "rewrites": [
+    { "source": "/base-rpc", "destination": "/api/proxy?service=base" },
+    {
+      "source": "/robinhood-rpc",
+      "destination": "/api/proxy?service=robinhood"
+    },
+    {
+      "source": "/arbitrum-rpc",
+      "destination": "/api/proxy?service=arbitrum"
+    },
+    {
+      "source": "/rpc/testnet",
+      "destination": "/api/proxy?service=starknet-testnet"
+    },
+    {
+      "source": "/rpc/testnet/:path*",
+      "destination": "/api/proxy?service=starknet-testnet&path=:path*"
+    },
+    {
+      "source": "/rpc/mainnet",
+      "destination": "/api/proxy?service=starknet-mainnet"
+    },
+    {
+      "source": "/rpc/mainnet/:path*",
+      "destination": "/api/proxy?service=starknet-mainnet&path=:path*"
+    },
+    {
+      "source": "/prover/testnet",
+      "destination": "/api/proxy?service=prover-testnet"
+    },
+    {
+      "source": "/prover/testnet/:path*",
+      "destination": "/api/proxy?service=prover-testnet&path=:path*"
+    },
+    {
+      "source": "/indexer/testnet",
+      "destination": "/api/proxy?service=indexer-testnet"
+    },
+    {
+      "source": "/indexer/testnet/:path*",
+      "destination": "/api/proxy?service=indexer-testnet&path=:path*"
+    },
+    {
+      "source": "/prover/mainnet",
+      "destination": "/api/proxy?service=prover-mainnet"
+    },
+    {
+      "source": "/prover/mainnet/:path*",
+      "destination": "/api/proxy?service=prover-mainnet&path=:path*"
+    },
+    {
+      "source": "/indexer/mainnet",
+      "destination": "/api/proxy?service=indexer-mainnet"
+    },
+    {
+      "source": "/indexer/mainnet/:path*",
+      "destination": "/api/proxy?service=indexer-mainnet&path=:path*"
+    },
+    {
+      "source": "/rpc",
+      "destination": "/api/proxy?service=starknet-mainnet"
+    },
+    {
+      "source": "/rpc/:path*",
+      "destination": "/api/proxy?service=starknet-mainnet&path=:path*"
+    },
+    {
+      "source": "/prover",
+      "destination": "/api/proxy?service=prover-mainnet"
+    },
+    {
+      "source": "/prover/:path*",
+      "destination": "/api/proxy?service=prover-mainnet&path=:path*"
+    },
+    {
+      "source": "/indexer",
+      "destination": "/api/proxy?service=indexer-mainnet"
+    },
+    {
+      "source": "/indexer/:path*",
+      "destination": "/api/proxy?service=indexer-mainnet&path=:path*"
+    },
+    {
+      "source": "/api/avnu",
+      "destination": "/api/proxy?service=avnu"
+    },
+    {
+      "source": "/api/avnu/:path*",
+      "destination": "/api/proxy?service=avnu&path=:path*"
+    },
+    {
+      "source": "/api/relay",
+      "destination": "/api/proxy?service=relay"
+    },
+    {
+      "source": "/api/relay/:path*",
+      "destination": "/api/proxy?service=relay&path=:path*"
+    },
+    {
+      "source": "/api/private-launchpad",
+      "destination": "/api/private-relayer"
+    },
+    {
+      "source": "/api/private-launchpad/:path*",
+      "destination": "/api/private-relayer?path=:path*"
+    }
+  ],
+  "headers": [
+    {
+      "source": "/(.*)",
+      "headers": [
+        { "key": "X-Content-Type-Options", "value": "nosniff" },
+        { "key": "Referrer-Policy", "value": "no-referrer" },
+        {
+          "key": "Permissions-Policy",
+          "value": "camera=(), microphone=(), geolocation=()"
+        }
+      ]
+    }
+  ]
+}

@@ -14,14 +14,16 @@ in browser memory and must never be logged or persisted.
 
 ```ts
 import {
+  clankerV4LaunchAdapter,
   createPrivateLaunchpadIdentityMessage,
   createHttpRelay,
   createStarkwarePrivacyBridgeEngine,
   PrivateLaunchpadClient,
-  preparedCallsAdapter,
 } from "@private-launchpad/sdk";
 import {
   derivePolygonEoa,
+  moveIntoPool,
+  cashOut,
   fundAccountFromPool,
   returnToPool,
 } from "@starkware-libs/starknet-privacy-bridge";
@@ -34,6 +36,8 @@ const plugin = new PrivateLaunchpadClient({
   relay: createHttpRelay({ endpoint: "/api/private-launchpad/v1/relay" }),
   bridge: createStarkwarePrivacyBridgeEngine({
     derivePolygonEoa,
+    moveIntoPool,
+    cashOut,
     fundAccountFromPool,
     returnToPool,
   }),
@@ -44,20 +48,39 @@ const identitySignature = await walletClient.signMessage({
   message: createPrivateLaunchpadIdentityMessage("your-launchpad.example"),
 });
 
-const session = await plugin.deriveSession(identitySignature, 0);
+await plugin.depositToPrivateBalance({
+  signature: identitySignature,
+  amount: 100_000_000n,
+  provider: window.ethereum,
+});
+
+await plugin.withdrawPrivateBalance({
+  signature: identitySignature,
+  amount: 25_000_000n,
+  destination: connectedEvmAddress,
+  connectedEvmAddress,
+});
+
+const session = await plugin.deriveSession(identitySignature, 1);
 await plugin.fundSession({
   signature: identitySignature,
-  accountIndex: 0,
+  accountIndex: 1,
   amount: 10_000_000n,
   connectedEvmAddress,
 });
 
-const adapter = preparedCallsAdapter("existing-launchpad", 84532);
+const adapter = clankerV4LaunchAdapter(84532, {
+  builder: { admin: BUILDER, recipient: BUILDER },
+});
 await plugin.open({
   signature: identitySignature,
   session,
   adapter,
-  intent: { calls: hostSdkPreparedCalls },
+  intent: {
+    name: "Night Market",
+    symbol: "NITE",
+    creatorRewardBps: 8_000,
+  },
 });
 ```
 
@@ -66,7 +89,7 @@ The plugin owns private funding, deterministic account control, relayed executio
 the return-to-pool path.
 
 The bridge is injected because StarkWare currently distributes it through GitHub Packages. Pin the
-official package and its Starknet peer versions in the consuming application, then pass the three
+official package and its Starknet peer versions in the consuming application, then pass the five
 exports shown above. The repository's optional `pnpm build:official-bridge` fallback compiles exact
 upstream commits into a local ignored browser artifact when package access is unavailable. The
 plugin never vendors or forks bridge cryptography.

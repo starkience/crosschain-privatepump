@@ -1,0 +1,17 @@
+{
+  "network": "robinhood-mainnet",
+  "chainId": 4663,
+  "status": "deployed",
+  "deployer": "0xec54a1303838Ec7d8820494b2437B93e57b37cFE",
+  "deployerNonce": 0,
+  "factory": "0x2f04549436Aeb3693E849E6C8121CA901edF7Ce4",
+  "factoryRuntimeBytes": 9317,
+  "factoryRuntimeCodeHash": "0x7f8a4214e70963f328cad322e81053af12f8965cdbeeb73dee7971bca8a116ec",
+  "compiler": "solc-0.8.30",
+  "optimizerRuns": 10000,
+  "verifiedAt": "2026-08-28",
+  "ponsV2": {
+    "factory": "0x7eD598BcEf8bd9Edd8C97A195C6d13f40801EC7e",
+    "usdg": "0x5fc5360D0400a0Fd4f2af552ADD042D716F1d168"
+  }
+}

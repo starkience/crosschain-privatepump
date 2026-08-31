@@ -1,12 +1,24 @@
 import { describe, expect, it, vi } from "vitest";
 import { privateKeyToAccount } from "viem/accounts";
-import type { Address, Hash, Hex, PublicClient, WalletClient } from "viem";
 import {
+  encodeFunctionData,
+  type Address,
+  type Hash,
+  type Hex,
+  type PublicClient,
+  type WalletClient,
+} from "viem";
+import {
+  erc20Abi,
   NO_RELAYER_FEE,
   signExecution,
   type RelayExecutionRequest,
 } from "@private-launchpad/sdk";
-import { PrivateLaunchpadRelayer, relayerFromEnv } from "./relayer.js";
+import {
+  PrivateLaunchpadRelayer,
+  relayerFromEnv,
+  validateStaticPolicy,
+} from "./relayer.js";
 
 const OWNER_KEY = `0x${"11".repeat(32)}` as Hex;
 const RELAYER_KEY = `0x${"22".repeat(32)}` as Hex;
@@ -41,10 +53,11 @@ async function signedRequest(): Promise<RelayExecutionRequest> {
   };
 }
 
-function fixture(accountNonce?: bigint) {
+function fixture(accountNonce?: bigint, relayerGasBalance = 1n) {
   const simulateContract = vi.fn(async (request: unknown) => ({ request }));
   const writeContract = vi.fn(async () => TX_HASH);
   const publicClient = {
+    getBalance: vi.fn(async () => relayerGasBalance),
     getBytecode: vi.fn(async () =>
       accountNonce === undefined ? undefined : ("0x01" as Hex),
     ),
@@ -90,9 +103,30 @@ describe("private launchpad relayer", () => {
     await expect(relayer.relay(request)).rejects.toThrow(/stale account nonce/);
     expect(simulateContract).not.toHaveBeenCalled();
   });
+
+  it("rejects an empty gas account before broadcast", async () => {
+    const request = await signedRequest();
+    const { relayer, simulateContract, writeContract } = fixture(undefined, 0n);
+
+    await expect(relayer.relay(request)).rejects.toThrow(
+      /relayer gas account .* has no Robinhood ETH/,
+    );
+    expect(simulateContract).toHaveBeenCalledOnce();
+    expect(writeContract).not.toHaveBeenCalled();
+  });
 });
 
 describe("relayer environment policy", () => {
+  it("loads a deployment-specific execution domain", () => {
+    const relayer = relayerFromEnv({
+      ...BASE_ENV,
+      EXECUTION_DOMAIN_NAME: "PonsPrivacyAccount",
+      ALLOWED_TARGETS: TARGET,
+    });
+
+    expect(relayer.policy.executionDomainName).toBe("PonsPrivacyAccount");
+  });
+
   it("fails closed when no target allowlist is configured", () => {
     expect(() => relayerFromEnv(BASE_ENV)).toThrow(
       /ALLOWED_TARGETS is required/,
@@ -117,6 +151,52 @@ describe("relayer environment policy", () => {
     });
 
     expect(relayer.policy.allowedTargets).toBeUndefined();
+  });
+
+  it("requires authenticated Relay lookup for the Pons return policy", () => {
+    expect(() =>
+      relayerFromEnv({
+        ...BASE_ENV,
+        CHAIN_ID: "4663",
+        PONS_V2_POLICY: "true",
+      }),
+    ).toThrow(/RELAY_API_KEY is required/);
+
+    const relayer = relayerFromEnv({
+      ...BASE_ENV,
+      CHAIN_ID: "4663",
+      PONS_V2_POLICY: "true",
+      RELAY_API_KEY: "server-key",
+    });
+    expect(relayer.policy.semanticValidator).toBeTypeOf("function");
+  });
+
+  it("allows only proxy-bound ERC-20 approvals on dynamic token targets", async () => {
+    const proxy = "0x7777777777777777777777777777777777777777" as Address;
+    const request = await signedRequest();
+    request.calls = [
+      {
+        target: "0x8888888888888888888888888888888888888888",
+        value: 0n,
+        data: encodeFunctionData({
+          abi: erc20Abi,
+          functionName: "approve",
+          args: [proxy, 10n],
+        }),
+      },
+    ];
+    const relayer = relayerFromEnv({
+      ...BASE_ENV,
+      ALLOWED_TARGETS: TARGET,
+      ALLOW_UNISWAP_PROXY_APPROVALS: "true",
+      UNISWAP_PROXY_ADDRESS: proxy,
+    });
+
+    expect(() => validateStaticPolicy(request, relayer.policy)).not.toThrow();
+    request.calls = [{ ...request.calls[0]!, value: 1n }];
+    expect(() => validateStaticPolicy(request, relayer.policy)).toThrow(
+      /target not allowed/,
+    );
   });
 
   it.each(["yes", "TRUE", "1"])(

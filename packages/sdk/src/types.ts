@@ -31,9 +31,17 @@ export interface RelayExecutionRequest {
   prefund: bigint;
   fee: RelayerFee;
   signature: Hex;
+  /** Relay quote whose strict deposit action this batch executes. */
+  relayRequestId?: string;
 }
 
 export type RelayExecution = (request: RelayExecutionRequest) => Promise<Hash>;
+
+export interface ExecutionConfirmation {
+  transactionHash: Hash;
+  status: "success" | "reverted";
+  blockNumber: bigint;
+}
 
 export interface AdapterContext {
   account: Address;
@@ -57,15 +65,25 @@ export interface ExecuteOptions {
   fee?: RelayerFee;
   prefund?: bigint;
   deadlineSeconds?: number;
+  /** Included for policy validation; calls remain owner-bound by EIP-712. */
+  relayRequestId?: string;
 }
 
 export interface PrivateLaunchpadClientConfig {
   chainId: number;
   factory: Address;
   usdc: Address;
+  /** EIP-712 domain deployed by the execution-account factory. */
+  executionDomainName?: string;
   publicClient: PublicClient;
   relay: RelayExecution;
   bridge: PrivacyBridgeEngine;
+  /** Optional public-edge bridge route used before depositing into STRK20. */
+  depositTransport?: PrivateDepositTransport;
+  /** Optional cross-chain funding route used instead of the bridge's native destination. */
+  fundingTransport?: SessionFundingTransport;
+  /** Optional execution-chain return route used instead of native CCTP return. */
+  returnTransport?: SessionReturnTransport;
   channel?: string;
 }
 
@@ -80,6 +98,39 @@ export type BridgeStepCallback = (
   detail?: string,
 ) => void;
 
+export interface Eip1193Provider {
+  request(args: { method: string; params?: unknown }): Promise<unknown>;
+}
+
+export type BridgeDepositStep = "deploy" | "register" | "deposit";
+
+export type BridgeDepositStepCallback = (
+  step: BridgeDepositStep,
+  status: "pending" | "running" | "done" | "error",
+  detail?: string,
+  transactionHash?: string,
+) => void;
+
+export interface BridgeDepositResult {
+  depositedNetWei: bigint;
+  deposited: boolean;
+}
+
+export type BridgeCashOutStep = "burn" | "attest" | "mint";
+
+export type BridgeCashOutStepCallback = (
+  step: BridgeCashOutStep,
+  status: "pending" | "running" | "done" | "error",
+  detail?: string,
+) => void;
+
+export interface BridgeCashOutResult {
+  burnTxHash: string;
+  destination: string;
+  forwardTxHash?: string;
+  amountNet: bigint;
+}
+
 export interface BridgeFundResult {
   burnTxHash: string;
   accountIndex: number;
@@ -87,9 +138,76 @@ export interface BridgeFundResult {
   depositWallet: string;
   commitmentH: bigint;
   forwardTxHash: string;
+  /** Stablecoin received on the execution chain after CCTP/bridge fees. */
+  amountDelivered?: bigint;
+  /** Quote-protected lower bound for the execution-chain amount. */
+  minimumAmountDelivered?: bigint;
+  /** Relay request used for the Arbitrum -> execution-chain leg. */
+  relayRequestId?: string;
+  relayStatus?: string;
   channel?: string;
   selection?: Record<string, unknown>;
 }
+
+export interface CctpForwardFeeQuote {
+  maxFee: bigint;
+  forwardFee: bigint;
+  protocolFee: bigint;
+  finalityThreshold: number;
+}
+
+export interface BridgeOutToDepositResult {
+  burnTxHash: string;
+  mintRecipient: Address;
+  eoaAddress: Address;
+  commitmentH: bigint;
+}
+
+export interface SessionFundingTransportArgs {
+  bridge: PrivacyBridgeEngine;
+  signature: string;
+  session: PrivateLaunchpadSession;
+  amount: bigint;
+  connectedEvmAddress: Address;
+  fast: boolean;
+  onStep?: BridgeStepCallback;
+}
+
+export type SessionFundingTransport = (
+  args: SessionFundingTransportArgs,
+) => Promise<BridgeFundResult>;
+
+export interface PrivateDepositTransportArgs {
+  bridge: PrivacyBridgeEngine;
+  signature: string;
+  amount: bigint;
+  provider: Eip1193Provider;
+  resume: boolean;
+  onStep?: BridgeDepositStepCallback;
+  onBurned?: (info: { burnTxHash: string; explorerUrl?: string }) => void;
+}
+
+export type PrivateDepositTransport = (
+  args: PrivateDepositTransportArgs,
+) => Promise<BridgeDepositResult>;
+
+export interface SessionReturnTransportArgs {
+  bridge: PrivacyBridgeEngine;
+  signature: string;
+  session: PrivateLaunchpadSession;
+  connectedEvmAddress: Address;
+  amount: bigint;
+  submitCalls(
+    calls: readonly ExecutionCall[],
+    context?: { relayRequestId?: string },
+  ): Promise<Hash>;
+  waitForExecution(transactionHash: Hash): Promise<ExecutionConfirmation>;
+  onStep?: BridgeStepCallback;
+}
+
+export type SessionReturnTransport = (
+  args: SessionReturnTransportArgs,
+) => Promise<BridgeReturnResult>;
 
 export interface BridgeReturnResult {
   amountReturned: bigint;
@@ -104,6 +222,55 @@ export interface PrivacyBridgeEngine {
     accountIndex: number,
     channel: string,
   ): DerivedBridgeEoa;
+  readPrivateBalance(signature: string): Promise<bigint>;
+  readPendingDeposit(signature: string): Promise<bigint>;
+  deriveStarknetAddress?(signature: string): string;
+  /** Low-level Fast CCTP fee quote used by cross-chain funding transports. */
+  quoteCctpOut?(args: {
+    amount: bigint;
+    destinationDomain: number;
+    fast: boolean;
+  }): Promise<CctpForwardFeeQuote>;
+  /** Withdraw privately and have Circle forward-mint to an arbitrary strict deposit address. */
+  bridgeOutToDeposit?(args: {
+    signature: string;
+    accountIndex: number;
+    amount: bigint;
+    destination: Address;
+    destinationChainId: number;
+    channel: string;
+    fee: CctpForwardFeeQuote;
+    onStatus?: (status: string) => void;
+  }): Promise<BridgeOutToDepositResult>;
+  sendPrivateToStarknet?(args: {
+    signature: string;
+    amount: bigint;
+    recipient: string;
+    onStatus?: (status: string) => void;
+  }): Promise<{
+    txHash: string;
+    recipient: string;
+    amount: bigint;
+    confirmed: boolean;
+  }>;
+  moveIntoPool(args: {
+    signature: Hex;
+    funding: "metamask";
+    amountWei: bigint;
+    provider: Eip1193Provider;
+    sourceChainId?: number;
+    resume?: boolean;
+    onStep?: BridgeDepositStepCallback;
+    onBurned?: (info: { burnTxHash: string; explorerUrl?: string }) => void;
+  }): Promise<BridgeDepositResult>;
+  cashOut(args: {
+    resolveSignature: () => Promise<string>;
+    amount: bigint;
+    destination: string;
+    evmAddress: string;
+    destChainId?: number;
+    onStep?: BridgeCashOutStepCallback;
+  }): Promise<BridgeCashOutResult>;
   fundAccountFromPool(args: {
     resolveSignature: () => Promise<string>;
     accountIndex: number;

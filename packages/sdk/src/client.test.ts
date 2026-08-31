@@ -21,6 +21,16 @@ const TX_HASH = `0x${"77".repeat(32)}` as Hash;
 
 function fixture(balance = 100n) {
   const relayRequests: RelayExecutionRequest[] = [];
+  const moveIntoPool = vi.fn(async (args) => ({
+    depositedNetWei: args.amountWei,
+    deposited: true,
+  }));
+  const cashOut = vi.fn(async (args) => ({
+    burnTxHash: "cash-burn",
+    destination: args.destination,
+    forwardTxHash: "cash-forward",
+    amountNet: args.amount,
+  }));
   const fundAccountFromPool = vi.fn(
     async (args: Parameters<PrivacyBridgeEngine["fundAccountFromPool"]>[0]) => {
       expect(await args.resolveDepositWallet("ignored", 0)).toBe(ACCOUNT);
@@ -46,13 +56,24 @@ function fixture(balance = 100n) {
       } satisfies BridgeReturnResult;
     },
   );
+  const readPrivateBalance = vi.fn(async () => balance);
+  const readPendingDeposit = vi.fn(async () => 25_000_000n);
+  const waitForTransactionReceipt = vi.fn(async () => ({
+    status: "success" as const,
+    blockNumber: 321n,
+  }));
   const bridge: PrivacyBridgeEngine = {
     deriveEvmOwner: () => ({ address: OWNER, privateKey: PRIVATE_KEY }),
+    readPrivateBalance,
+    readPendingDeposit,
+    moveIntoPool,
+    cashOut,
     fundAccountFromPool,
     returnToPool,
   };
   const publicClient = {
     getBytecode: vi.fn(async () => undefined),
+    waitForTransactionReceipt,
     readContract: vi.fn(async (args: { functionName: string }) => {
       if (args.functionName === "computeAddress") return ACCOUNT;
       if (args.functionName === "balanceOf") return balance;
@@ -70,10 +91,124 @@ function fixture(balance = 100n) {
       return TX_HASH;
     },
   });
-  return { client, fundAccountFromPool, relayRequests, returnToPool };
+  return {
+    client,
+    cashOut,
+    fundAccountFromPool,
+    moveIntoPool,
+    readPrivateBalance,
+    readPendingDeposit,
+    relayRequests,
+    returnToPool,
+    waitForTransactionReceipt,
+  };
 }
 
 describe("private launchpad client", () => {
+  it("discovers the recoverable STRK20 balance", async () => {
+    const { client, readPrivateBalance } = fixture(25_000_000n);
+    await expect(client.readPrivateBalance("0x1234")).resolves.toBe(
+      25_000_000n,
+    );
+    expect(readPrivateBalance).toHaveBeenCalledWith("0x1234");
+  });
+
+  it("discovers a deposit awaiting the final STRK20 step", async () => {
+    const { client, readPendingDeposit } = fixture();
+    await expect(client.readPendingDeposit("0x1234")).resolves.toBe(
+      25_000_000n,
+    );
+    expect(readPendingDeposit).toHaveBeenCalledWith("0x1234");
+  });
+
+  it("waits for Base confirmation before reporting execution success", async () => {
+    const { client, waitForTransactionReceipt } = fixture();
+    await expect(client.waitForExecution(TX_HASH)).resolves.toEqual({
+      transactionHash: TX_HASH,
+      status: "success",
+      blockNumber: 321n,
+    });
+    expect(waitForTransactionReceipt).toHaveBeenCalledWith({
+      hash: TX_HASH,
+      confirmations: 1,
+      timeout: 120_000,
+    });
+  });
+
+  it("reads the live token balance from the private position account", async () => {
+    const { client } = fixture(1_240n);
+    const session = await client.deriveSession("app-signature", 2);
+    await expect(client.readSessionTokenBalance(session, TARGET)).resolves.toBe(
+      1_240n,
+    );
+    await expect(
+      client.readAccountTokenBalance(session.account, TARGET),
+    ).resolves.toBe(1_240n);
+  });
+
+  it("deposits connected-wallet USDC into the private balance", async () => {
+    const { client, moveIntoPool } = fixture();
+    const provider = { request: vi.fn(async () => [CONNECTED]) };
+    await expect(
+      client.depositToPrivateBalance({
+        signature: "0x1234",
+        amount: 50n,
+        provider,
+      }),
+    ).resolves.toEqual({ depositedNetWei: 50n, deposited: true });
+    expect(moveIntoPool).toHaveBeenCalledWith(
+      expect.objectContaining({
+        funding: "metamask",
+        amountWei: 50n,
+        provider,
+        sourceChainId: 84532,
+      }),
+    );
+  });
+
+  it("resumes only the final pool step without a fresh Base burn", async () => {
+    const { client, moveIntoPool } = fixture();
+    const provider = { request: vi.fn(async () => [CONNECTED]) };
+    await client.depositToPrivateBalance({
+      signature: "0x1234",
+      amount: 25n,
+      provider,
+      resume: true,
+    });
+    expect(moveIntoPool).toHaveBeenCalledWith(
+      expect.objectContaining({
+        amountWei: 25n,
+        provider,
+        resume: true,
+      }),
+    );
+  });
+
+  it("cashes private USDC out to a public EVM destination", async () => {
+    const { cashOut, client } = fixture();
+    await expect(
+      client.withdrawPrivateBalance({
+        signature: "0x1234",
+        amount: 25n,
+        destination: CONNECTED,
+        connectedEvmAddress: CONNECTED,
+      }),
+    ).resolves.toEqual({
+      burnTxHash: "cash-burn",
+      destination: CONNECTED,
+      forwardTxHash: "cash-forward",
+      amountNet: 25n,
+    });
+    expect(cashOut).toHaveBeenCalledWith(
+      expect.objectContaining({
+        amount: 25n,
+        destination: CONNECTED,
+        evmAddress: CONNECTED,
+        destChainId: 84532,
+      }),
+    );
+  });
+
   it("bridges directly to the deterministic smart account", async () => {
     const { client, fundAccountFromPool } = fixture();
     const result = await client.fundSession({

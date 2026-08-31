@@ -17,8 +17,20 @@ export default defineConfig(({ mode }) => {
   );
   addProxy(
     proxy,
+    "/robinhood-rpc",
+    environment.ROBINHOOD_RPC_URL,
+    "ROBINHOOD_RPC_URL",
+  );
+  addProxy(
+    proxy,
+    "/arbitrum-rpc",
+    environment.ARBITRUM_RPC_URL || "https://arb1.arbitrum.io/rpc",
+    "ARBITRUM_RPC_URL",
+  );
+  addProxy(
+    proxy,
     "/rpc/testnet",
-    environment.STARKNET_SEPOLIA_RPC_URL,
+    bridgeCompatibleStarknetRpcUrl(environment.STARKNET_SEPOLIA_RPC_URL),
     "STARKNET_SEPOLIA_RPC_URL",
   );
   addProxy(
@@ -35,12 +47,49 @@ export default defineConfig(({ mode }) => {
   );
   addProxy(
     proxy,
+    "/rpc/mainnet",
+    bridgeCompatibleStarknetRpcUrl(environment.STARKNET_MAINNET_RPC_URL),
+    "STARKNET_MAINNET_RPC_URL",
+  );
+  addProxy(
+    proxy,
+    "/prover/mainnet",
+    environment.STRK20_MAINNET_PROVER_URL,
+    "STRK20_MAINNET_PROVER_URL",
+  );
+  addProxy(
+    proxy,
+    "/indexer/mainnet",
+    environment.STRK20_MAINNET_INDEXER_URL,
+    "STRK20_MAINNET_INDEXER_URL",
+  );
+  addProxy(
+    proxy,
     "/api/avnu",
     environment.AVNU_PAYMASTER_API_KEY
       ? environment.AVNU_PAYMASTER_URL
       : undefined,
     "AVNU_PAYMASTER_URL and AVNU_PAYMASTER_API_KEY",
-    environment.AVNU_PAYMASTER_API_KEY,
+    environment.AVNU_PAYMASTER_API_KEY
+      ? { "x-paymaster-api-key": environment.AVNU_PAYMASTER_API_KEY }
+      : undefined,
+  );
+  addProxy(
+    proxy,
+    "/api/relay",
+    environment.RELAY_API_KEY
+      ? environment.RELAY_API_URL || "https://api.relay.link"
+      : undefined,
+    "RELAY_API_KEY",
+    environment.RELAY_API_KEY
+      ? { "x-api-key": environment.RELAY_API_KEY }
+      : undefined,
+  );
+  addProxy(
+    proxy,
+    "/api/private-launchpad",
+    environment.PRIVATE_LAUNCHPAD_RELAYER_ORIGIN,
+    "PRIVATE_LAUNCHPAD_RELAYER_ORIGIN",
   );
 
   return {
@@ -55,12 +104,25 @@ export default defineConfig(({ mode }) => {
   };
 });
 
+function bridgeCompatibleStarknetRpcUrl(
+  target: string | undefined,
+): string | undefined {
+  if (!target) return target;
+
+  // The pinned STRK20 bridge reads speculative state through the v0.10
+  // `pre_confirmed` block tag. Alchemy's older versioned endpoints reject it.
+  return target.replace(
+    /\/starknet\/version\/rpc\/v0_(?:7|8|9)\//,
+    "/starknet/version/rpc/v0_10/",
+  );
+}
+
 function addProxy(
   proxy: Record<string, ProxyOptions>,
   path: string,
   target: string | undefined,
   environmentName: string,
-  paymasterApiKey?: string,
+  requestHeaders?: Readonly<Record<string, string>>,
 ): void {
   const prefix = new RegExp(`^${path}`);
   if (!target) {
@@ -86,11 +148,13 @@ function addProxy(
     changeOrigin: true,
     secure: target.startsWith("https://"),
     rewrite: (requestPath) => requestPath.replace(prefix, ""),
-    ...(paymasterApiKey
+    ...(requestHeaders
       ? {
           configure: (server) => {
             server.on("proxyReq", (request) => {
-              request.setHeader("x-paymaster-api-key", paymasterApiKey);
+              for (const [name, value] of Object.entries(requestHeaders)) {
+                request.setHeader(name, value);
+              }
             });
           },
         }

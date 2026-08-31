@@ -56,6 +56,7 @@ export function parseRelayRequest(value: unknown): RelayExecutionRequest {
     amount: uint(rawFee.amount, "fee.amount"),
     recipient: address(rawFee.recipient, "fee.recipient"),
   };
+  const relayRequestId = optionalRelayRequestId(input.relayRequestId);
   return {
     chainId: safeNumber(input.chainId, "chainId"),
     factory: address(input.factory, "factory"),
@@ -68,6 +69,7 @@ export function parseRelayRequest(value: unknown): RelayExecutionRequest {
     prefund: uint(input.prefund, "prefund"),
     fee,
     signature: hex(input.signature, "signature"),
+    ...(relayRequestId ? { relayRequestId } : {}),
   };
 }
 
@@ -85,4 +87,12 @@ export function relayRequestJson(
     prefund: request.prefund.toString(),
     fee: { ...request.fee, amount: request.fee.amount.toString() },
   };
+}
+
+function optionalRelayRequestId(value: unknown): string | undefined {
+  if (value === undefined) return undefined;
+  if (typeof value !== "string" || !/^0x[0-9a-fA-F]{64}$/.test(value)) {
+    throw new Error("relayRequestId must be a 32-byte hex request ID");
+  }
+  return value.toLowerCase();
 }

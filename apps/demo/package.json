@@ -6,25 +6,28 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "build": "vite build",
+    "build": "pnpm build:server && vite build",
+    "build:server": "esbuild server/private-relayer.ts --bundle --platform=node --format=esm --target=node24 --banner:js=\"import { createRequire } from 'node:module'; const require = createRequire(import.meta.url);\" --outfile=public/api/private-relayer.mjs",
     "preview": "vite preview",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "vitest run",
-    "format:check": "prettier --check 'src/**/*.{ts,tsx,css}' '*.{ts,json,html,md}'"
+    "format:check": "prettier --check 'src/**/*.{ts,tsx,css}' 'server/**/*.ts' public/api/proxy.mjs public/vercel.json '*.{ts,json,html,md}'"
   },
   "dependencies": {
     "@fontsource-variable/bricolage-grotesque": "^5.2.8",
     "@fontsource/ibm-plex-mono": "^5.2.6",
+    "@phosphor-icons/react": "^2.1.10",
     "@private-launchpad/sdk": "workspace:*",
     "react": "^19.1.1",
     "react-dom": "^19.1.1",
-    "viem": "^2.37.3"
+    "viem": "^2.38.3"
   },
   "devDependencies": {
     "@testing-library/react": "^16.3.0",
     "@types/react": "^19.1.10",
     "@types/react-dom": "^19.1.7",
     "@vitejs/plugin-react": "^5.0.2",
+    "esbuild": "^0.25.12",
     "jsdom": "^26.1.0",
     "typescript": "^5.9.2",
     "vite": "^7.1.3",

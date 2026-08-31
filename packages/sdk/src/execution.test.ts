@@ -45,6 +45,28 @@ describe("execution authorization", () => {
     expect(recovered).toBe(privateKeyToAccount(PRIVATE_KEY).address);
   });
 
+  it("supports a deployment-specific EIP-712 domain", async () => {
+    const args = {
+      privateKey: PRIVATE_KEY,
+      executionDomainName: "PonsPrivacyAccount",
+      chainId: 4663,
+      account: ACCOUNT,
+      calls,
+      nonce: 0n,
+      deadline: 2_000_000_000n,
+      fee: NO_RELAYER_FEE,
+      prefund: 0n,
+    };
+    const signature = await signExecution(args);
+    const recovered = await recoverTypedDataAddress({
+      ...executionTypedData(args),
+      signature,
+    });
+
+    expect(executionTypedData(args).domain.name).toBe("PonsPrivacyAccount");
+    expect(recovered).toBe(privateKeyToAccount(PRIVATE_KEY).address);
+  });
+
   it("binds the fee and prefund into the authorization", () => {
     const base = {
       chainId: 84532,

@@ -1,6 +1,7 @@
 import {
   createPublicClient,
   createWalletClient,
+  decodeFunctionData,
   getAddress,
   http,
   verifyTypedData,
@@ -12,25 +13,37 @@ import {
 } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
 import {
+  DEFAULT_EXECUTION_DOMAIN_NAME,
   executionTypedData,
+  erc20Abi,
   privateLaunchpadAccountAbi,
   privateLaunchpadAccountFactoryAbi,
   type RelayExecutionRequest,
   type RelayerFee,
 } from "@private-launchpad/sdk";
+import { createPonsV2SemanticValidator } from "./pons-v2-policy.js";
+import { relayReturnVerifierFromEnv } from "./relay-requests.js";
 
 const ZERO_ADDRESS = "0x0000000000000000000000000000000000000000";
 
 export interface RelayerPolicy {
   chainId: number;
   factory: Address;
+  executionDomainName?: string;
   fee: RelayerFee;
   maxCalls: number;
   maxCalldataBytes: number;
   maxDeadlineSeconds: number;
   maxPrefund: bigint;
   allowedTargets?: ReadonlySet<string>;
+  uniswapProxyApprovalTarget?: Address;
+  semanticValidator?: SemanticCallValidator;
 }
+
+export type SemanticCallValidator = (
+  request: RelayExecutionRequest,
+  publicClient: PublicClient,
+) => Promise<void>;
 
 export interface RelayerDependencies {
   publicClient: PublicClient;
@@ -67,7 +80,12 @@ export function validateStaticPolicy(
     calldataBytes += (call.data.length - 2) / 2;
     const target = getAddress(call.target).toLowerCase();
     if (target === ZERO_ADDRESS) throw new Error("zero call target");
-    if (policy.allowedTargets && !policy.allowedTargets.has(target)) {
+    if (
+      policy.allowedTargets &&
+      !policy.allowedTargets.has(target) &&
+      !isBoundedProxyApproval(call, policy.uniswapProxyApprovalTarget) &&
+      !policy.semanticValidator
+    ) {
       throw new Error(`target not allowed: ${call.target}`);
     }
   }
@@ -98,6 +116,8 @@ export class PrivateLaunchpadRelayer {
     const signatureValid = await verifyTypedData({
       address: request.owner,
       ...executionTypedData({
+        executionDomainName:
+          this.policy.executionDomainName ?? DEFAULT_EXECUTION_DOMAIN_NAME,
         chainId: request.chainId,
         account: request.account,
         calls: request.calls,
@@ -109,6 +129,8 @@ export class PrivateLaunchpadRelayer {
       signature: request.signature,
     });
     if (!signatureValid) throw new Error("invalid owner signature");
+
+    await this.policy.semanticValidator?.(request, publicClient);
 
     const code = await publicClient.getBytecode({ address: request.account });
     const currentNonce = code
@@ -139,6 +161,19 @@ export class PrivateLaunchpadRelayer {
       value: request.prefund,
     };
     const simulation = await publicClient.simulateContract(parameters);
+
+    // eth_call-based simulation does not require the sender to own native gas,
+    // so a completely empty relayer can otherwise pass every policy and
+    // execution check only to fail during broadcast with an opaque RPC error.
+    // Fail before writeContract with a stable, actionable message instead.
+    const relayerGasBalance = await publicClient.getBalance({
+      address: relayerAccount.address,
+    });
+    if (relayerGasBalance === 0n) {
+      throw new Error(
+        `relayer gas account ${relayerAccount.address} has no Robinhood ETH`,
+      );
+    }
     return walletClient.writeContract(simulation.request);
   }
 }
@@ -147,6 +182,8 @@ export function relayerFromEnv(
   env: NodeJS.ProcessEnv,
 ): PrivateLaunchpadRelayer {
   const chainId = positiveInt(env.CHAIN_ID, "CHAIN_ID");
+  const executionDomainName =
+    env.EXECUTION_DOMAIN_NAME?.trim() || DEFAULT_EXECUTION_DOMAIN_NAME;
   const factory = requiredAddress(env.FACTORY_ADDRESS, "FACTORY_ADDRESS");
   const rpcUrl = required(env.RPC_URL, "RPC_URL");
   const privateKey = requiredHex(
@@ -174,7 +211,21 @@ export function relayerFromEnv(
     env.ALLOW_UNSAFE_ANY_TARGETS,
     "ALLOW_UNSAFE_ANY_TARGETS",
   );
-  if (!allowedTargets && !allowUnsafeAnyTargets) {
+  const allowUniswapProxyApprovals = optionalBoolean(
+    env.ALLOW_UNISWAP_PROXY_APPROVALS,
+    "ALLOW_UNISWAP_PROXY_APPROVALS",
+  );
+  const uniswapProxyApprovalTarget = allowUniswapProxyApprovals
+    ? requiredAddress(env.UNISWAP_PROXY_ADDRESS, "UNISWAP_PROXY_ADDRESS")
+    : undefined;
+  const usePonsV2Policy = optionalBoolean(env.PONS_V2_POLICY, "PONS_V2_POLICY");
+  const semanticValidator = usePonsV2Policy
+    ? createPonsV2SemanticValidator(undefined, relayReturnVerifierFromEnv(env))
+    : undefined;
+  if (usePonsV2Policy && chainId !== 4663) {
+    throw new Error("PONS_V2_POLICY requires Robinhood mainnet chain 4663");
+  }
+  if (!allowedTargets && !allowUnsafeAnyTargets && !semanticValidator) {
     throw new Error(
       "ALLOWED_TARGETS is required unless ALLOW_UNSAFE_ANY_TARGETS=true",
     );
@@ -190,6 +241,7 @@ export function relayerFromEnv(
     {
       chainId,
       factory,
+      executionDomainName,
       fee: { token: feeToken, amount: feeAmount, recipient: feeRecipient },
       maxCalls: positiveInt(env.MAX_CALLS ?? "16", "MAX_CALLS"),
       maxCalldataBytes: positiveInt(
@@ -205,9 +257,27 @@ export function relayerFromEnv(
         "MAX_PREFUND_WEI",
       ),
       ...(allowedTargets ? { allowedTargets } : {}),
+      ...(uniswapProxyApprovalTarget ? { uniswapProxyApprovalTarget } : {}),
+      ...(semanticValidator ? { semanticValidator } : {}),
     },
     { publicClient, walletClient, relayerAccount },
   );
+}
+
+function isBoundedProxyApproval(
+  call: RelayExecutionRequest["calls"][number],
+  proxy: Address | undefined,
+): boolean {
+  if (!proxy || call.value !== 0n) return false;
+  try {
+    const decoded = decodeFunctionData({ abi: erc20Abi, data: call.data });
+    return (
+      decoded.functionName === "approve" &&
+      getAddress(decoded.args[0]) === getAddress(proxy)
+    );
+  } catch {
+    return false;
+  }
 }
 
 function required(value: string | undefined, name: string): string {

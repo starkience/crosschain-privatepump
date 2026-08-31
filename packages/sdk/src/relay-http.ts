@@ -9,6 +9,21 @@ export interface HttpRelayOptions {
   timeoutMs?: number;
 }
 
+export class RelayerRejectedError extends Error {
+  readonly status: number;
+  readonly requestId: string | undefined;
+  readonly broadcasted = false;
+
+  constructor(status: number, message?: string, requestId?: string) {
+    super(
+      `relayer rejected execution with status ${status}${message ? `: ${message}` : ""}`,
+    );
+    this.name = "RelayerRejectedError";
+    this.status = status;
+    this.requestId = requestId;
+  }
+}
+
 /**
  * Creates the browser-facing transport for the policy relayer. Redirects are
  * refused so an owner-signed execution payload cannot be forwarded to a new
@@ -47,8 +62,10 @@ export function createHttpRelay(options: HttpRelayOptions): RelayExecution {
     }
     if (!response.ok) {
       const message = relayErrorMessage(body);
-      throw new Error(
-        `relayer rejected execution with status ${response.status}${message ? `: ${message}` : ""}`,
+      throw new RelayerRejectedError(
+        response.status,
+        message,
+        relayRequestId(body),
       );
     }
     if (!body || typeof body !== "object") {
@@ -63,6 +80,13 @@ export function createHttpRelay(options: HttpRelayOptions): RelayExecution {
     }
     return transactionHash as Hash;
   };
+}
+
+function relayRequestId(value: unknown): string | undefined {
+  if (!value || typeof value !== "object") return undefined;
+  const requestId = (value as Record<string, unknown>).requestId;
+  if (typeof requestId !== "string" || !requestId.trim()) return undefined;
+  return requestId.slice(0, 80);
 }
 
 export function relayExecutionRequestJson(

@@ -6,6 +6,7 @@ node_modules/
 dist/
 coverage/
 apps/demo/public/vendor/
+apps/demo/public/api/private-relayer.mjs
 
 # Foundry
 evm/cache/

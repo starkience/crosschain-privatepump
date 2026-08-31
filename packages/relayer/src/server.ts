@@ -3,27 +3,83 @@ import {
   type IncomingMessage,
   type ServerResponse,
 } from "node:http";
+import { randomUUID } from "node:crypto";
 import type { PrivateLaunchpadRelayer } from "./relayer.js";
 import { parseRelayRequest } from "./schema.js";
+import { tradeQuoteJson, type ClankerQuoteProvider } from "./clanker-quotes.js";
 
 const MAX_BODY_BYTES = 128 * 1024;
 
 export function startRelayerServer(
   relayer: PrivateLaunchpadRelayer,
   port: number,
+  options: { quoteService?: ClankerQuoteProvider } = {},
 ) {
   const server = createServer(async (request, response) => {
     try {
       if (request.method === "GET" && request.url === "/healthz") {
-        return json(response, 200, { ok: true });
+        const relayerAddress = relayer.dependencies.relayerAccount.address;
+        const gasBalance = await relayer.dependencies.publicClient.getBalance({
+          address: relayerAddress,
+        });
+        return json(response, 200, {
+          ok: true,
+          clankerQuotes: !!options.quoteService,
+          readyForBroadcast: gasBalance > 0n,
+          relayerAddress,
+          gasBalanceWei: gasBalance.toString(),
+        });
+      }
+      if (request.method === "POST" && request.url === "/v1/clanker/quote") {
+        if (!options.quoteService) {
+          return json(response, 503, {
+            error: "Clanker trade quotes are not configured",
+          });
+        }
+        const body = await readJson(request);
+        const quote = await options.quoteService.quote(body);
+        return json(response, 200, tradeQuoteJson(quote));
       }
       if (request.method !== "POST" || request.url !== "/v1/relay") {
         return json(response, 404, { error: "not found" });
       }
-      const body = await readJson(request);
-      const relayRequest = parseRelayRequest(body);
-      const transactionHash = await relayer.relay(relayRequest);
-      return json(response, 202, { transactionHash });
+      const requestId = randomUUID();
+      try {
+        const body = await readJson(request);
+        const relayRequest = parseRelayRequest(body);
+        console.info(
+          JSON.stringify({
+            event: "relay.received",
+            requestId,
+            callCount: relayRequest.calls.length,
+          }),
+        );
+        const transactionHash = await relayer.relay(relayRequest);
+        console.info(
+          JSON.stringify({
+            event: "relay.broadcast",
+            requestId,
+            transactionHash,
+          }),
+        );
+        return json(response, 202, { transactionHash, requestId });
+      } catch (error) {
+        const message =
+          error instanceof Error ? error.message : "unknown error";
+        console.error(
+          JSON.stringify({
+            event: "relay.rejected",
+            requestId,
+            broadcasted: false,
+            error: message,
+          }),
+        );
+        return json(response, 400, {
+          error: message,
+          requestId,
+          broadcasted: false,
+        });
+      }
     } catch (error) {
       const message = error instanceof Error ? error.message : "unknown error";
       return json(response, 400, { error: message });

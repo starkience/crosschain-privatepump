@@ -28,6 +28,18 @@ const BASE_CCTP_DOMAIN = 6;
 const OZ_ACCOUNT_CLASS =
   "0x5b4b537eaa2399e3aa99c4e2e0208ebd6c71bc1467938cd52c798c601e43564";
 const PAYMASTER_PROXY_SENTINEL = "same-origin-proxy";
+const STARKNET_MAINNET_CHAIN_ID = "0x534e5f4d41494e";
+const STRK20_MAINNET_POOL =
+  "0x040337b1af3c663e86e333bab5a4b28da8d4652a15a69beee2b677776ffe812a";
+const MAINNET_OUTBOUND_ANONYMIZER =
+  "0x009067f35d2cab3cb933f3d78793660402026f8fa31e041ca2cab4a8e9a49092";
+const MAINNET_INBOUND_ANONYMIZER =
+  "0x03a7e7f34e530f8ec00b1ff7eaca90a136311d9da7cb17a73203f813b56c86cb";
+const STARKNET_MAINNET_USDC =
+  "0x033068F6539f8e6e6b131e6B2B814e6c34A5224bC66947c47DaB9dFeE93b35fb";
+const ARBITRUM_CHAIN_ID = 42161;
+const ARBITRUM_CCTP_DOMAIN = 3;
+const ARBITRUM_USDC = "0xaf88d065e77c8cc2239327c5edb3a432268e5831";
 
 interface OfficialBridgeManifest {
   schemaVersion: 1;
@@ -82,6 +94,7 @@ interface OfficialBridgeConfigurationExports {
 
 export interface OfficialBridgeLoadOptions {
   environment: Readonly<Record<string, unknown>>;
+  route?: "base-sepolia" | "pons-mainnet";
   environmentPrefix?: string;
   manifestUrl?: string;
 }
@@ -117,7 +130,19 @@ export function validateOfficialBridgeModule(
   }
   const module = value as Record<string, unknown>;
   for (const name of [
+    "deriveStarknetPrivateKey",
+    "deriveStarknetAccount",
+    "deriveViewingKey",
+    "deriveAccountNonce",
+    "discoverPrivateBalanceForAddress",
+    "readUndepositedResidual",
+    "getActiveConfig",
     "derivePolygonEoa",
+    "fetchForwardMaxFee",
+    "bridgeOut",
+    "sendPrivateToStarknet",
+    "moveIntoPool",
+    "cashOut",
     "fundAccountFromPool",
     "returnToPool",
   ] as const) {
@@ -126,6 +151,65 @@ export function validateOfficialBridgeModule(
     }
   }
   return module as unknown as StarkwarePrivacyBridgeExports;
+}
+
+export function configureOfficialBridgeForPonsMainnet(
+  value: unknown,
+  environment: Readonly<Record<string, unknown>>,
+  environmentPrefix = "VITE_",
+): StarkwarePrivacyBridgeExports {
+  const bridge = validateOfficialBridgeModule(value);
+  const configuration = validateOfficialBridgeConfigurationModule(value);
+  const forced = {
+    ...environment,
+    [`${environmentPrefix}NETWORK`]: "mainnet",
+    [`${environmentPrefix}CCTP_FAST`]: "true",
+    [`${environmentPrefix}CCTP_DEFAULT_DEST_CHAIN_ID`]:
+      String(ARBITRUM_CHAIN_ID),
+  };
+  configuration.initBridgeConfig(
+    configuration.bridgeEnvFromRecord(forced, environmentPrefix),
+  );
+  validatePonsMainnetBridgeConfig(configuration.getActiveConfig());
+  return bridge;
+}
+
+export function validatePonsMainnetBridgeConfig(
+  value: unknown,
+): OfficialBridgeResolvedConfig {
+  if (!value || typeof value !== "object") {
+    throw new Error(
+      "official privacy bridge did not resolve its configuration",
+    );
+  }
+  const config = value as Partial<OfficialBridgeResolvedConfig>;
+  const source = config.evmCctpSources?.[ARBITRUM_CHAIN_ID];
+  const destination = config.evmCctpDestinations?.[ARBITRUM_CHAIN_ID];
+  const same = (actual: string | undefined, expected: string) =>
+    actual?.toLowerCase() === expected.toLowerCase();
+  if (
+    config.network !== "mainnet" ||
+    config.chainId?.toLowerCase() !== STARKNET_MAINNET_CHAIN_ID ||
+    !same(config.poolAddress, STRK20_MAINNET_POOL) ||
+    !same(config.anonymizerAddress, MAINNET_OUTBOUND_ANONYMIZER) ||
+    !same(config.inboundAnonymizerAddress, MAINNET_INBOUND_ANONYMIZER) ||
+    !same(config.depositToken?.address, STARKNET_MAINNET_USDC) ||
+    !same(config.ozClassHash, OZ_ACCOUNT_CLASS) ||
+    config.cctp?.starknetDomain !== 25 ||
+    config.cctp?.defaultDestChainId !== ARBITRUM_CHAIN_ID ||
+    source?.chainId !== ARBITRUM_CHAIN_ID ||
+    source?.domain !== ARBITRUM_CCTP_DOMAIN ||
+    !same(source?.usdc, ARBITRUM_USDC) ||
+    destination?.chainId !== ARBITRUM_CHAIN_ID ||
+    destination?.domain !== ARBITRUM_CCTP_DOMAIN ||
+    !same(destination?.usdcAddress, ARBITRUM_USDC)
+  ) {
+    throw new Error(
+      "official privacy bridge configuration is not the canonical STRK20 mainnet -> Arbitrum route",
+    );
+  }
+  validatePrivateProxies(config);
+  return config as OfficialBridgeResolvedConfig;
 }
 
 export function validateOfficialBridgeConfigurationModule(
@@ -219,6 +303,13 @@ export function validateBaseSepoliaBridgeConfig(
       "official privacy bridge configuration is not the canonical Base Sepolia route",
     );
   }
+  validatePrivateProxies(config);
+  return config as OfficialBridgeResolvedConfig;
+}
+
+function validatePrivateProxies(
+  config: Partial<OfficialBridgeResolvedConfig>,
+): void {
   if (!config.paymaster?.endpoint || !config.paymaster.apiKey) {
     throw new Error(
       "official privacy bridge requires an AVNU paymaster for the live browser route",
@@ -243,7 +334,6 @@ export function validateBaseSepoliaBridgeConfig(
       );
     }
   }
-  return config as OfficialBridgeResolvedConfig;
 }
 
 export async function loadOfficialBridgeEngine(
@@ -276,13 +366,19 @@ export async function loadOfficialBridgeEngine(
   );
   try {
     const module: unknown = await import(/* @vite-ignore */ objectUrl);
-    return createStarkwarePrivacyBridgeEngine(
-      configureOfficialBridgeForBaseSepolia(
-        module,
-        options.environment,
-        options.environmentPrefix,
-      ),
-    );
+    const configured =
+      options.route === "pons-mainnet"
+        ? configureOfficialBridgeForPonsMainnet(
+            module,
+            options.environment,
+            options.environmentPrefix,
+          )
+        : configureOfficialBridgeForBaseSepolia(
+            module,
+            options.environment,
+            options.environmentPrefix,
+          );
+    return createStarkwarePrivacyBridgeEngine(configured);
   } finally {
     URL.revokeObjectURL(objectUrl);
   }

@@ -24,7 +24,8 @@ Snapshot date: 2026-08-21. Revalidate before release.
 - Source-build compatibility was reverified on 2026-08-24 against bridge `v0.1.22`
   (`3e95694b997069c47eff52cd576af0bb3e03612d`) and its declared Privacy SDK `0.14.3-rc.3`
   (`efc61cbbdab5b714b5cf915f9735d88948e2ea82`). A clean build exposed `derivePolygonEoa`,
-  `fundAccountFromPool`, and `returnToPool`. `scripts/build-official-bridge.mjs` pins these commits
+  `moveIntoPool`, `cashOut`, `fundAccountFromPool`, and `returnToPool`.
+  `scripts/build-official-bridge.mjs` pins these commits
   so the package-auth path has a source-provenance fallback without committing or modifying
   upstream cryptography.
 
@@ -39,9 +40,14 @@ Snapshot date: 2026-08-21. Revalidate before release.
 
 ## EVM launchpads
 
-- [`clanker-devco/v3.1-contracts`](https://github.com/clanker-devco/v3.1-contracts), inspected at
-  `6a399e38b3ef6024f3e4117ab326b044536e758a`. Clanker creates a token and Uniswap V3 pool, installs
-  single-sided token liquidity, locks the LP NFT, and can perform an initial payable swap.
+- [`clanker-devco/clanker-sdk`](https://github.com/clanker-devco/clanker-sdk), inspected on
+  2026-08-24 at `cf34aca87df23acb4fa7fc5a1a6e766a225c420d` (`4.2.18`). Its V4
+  `getDeployTransaction` surface produces the official deploy ABI, target, value, expected token,
+  and chain without requiring the root wallet.
+- [Uniswap Trading API](https://developers.uniswap.org/docs/api-reference/aggregator_quote) was
+  revalidated on 2026-08-25 for Base mainnet V4-hook routing, custom recipients, and the no-Permit2
+  proxy workflow. It returned no Base Sepolia routes, so testnet uses the canonical deployed
+  V4Quoter plus Plank's exact-input helper.
 - [`flayerlabs/flaunchgg-contracts`](https://github.com/flayerlabs/flaunchgg-contracts) was inspected
   for its Uniswap V4 PositionManager/hook lifecycle, fair-launch schedule, premine, fee distribution,
   and continuing pool liquidity.

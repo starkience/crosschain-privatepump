@@ -1,7 +1,10 @@
 import { describe, expect, it, vi } from "vitest";
 import type { PrivacyBridgeEngine } from "@private-launchpad/sdk";
 import type { PublicClient } from "viem";
-import { createBaseSepoliaLiveClient } from "./live-client.js";
+import {
+  createBaseSepoliaLiveClient,
+  createPonsMainnetLiveClient,
+} from "./live-client.js";
 
 const factory = "0x1111111111111111111111111111111111111111";
 const environment = {
@@ -11,6 +14,8 @@ const environment = {
 };
 const bridge = {
   deriveEvmOwner: vi.fn(),
+  moveIntoPool: vi.fn(),
+  cashOut: vi.fn(),
   fundAccountFromPool: vi.fn(),
   returnToPool: vi.fn(),
 } as unknown as PrivacyBridgeEngine;
@@ -73,5 +78,35 @@ describe("Base Sepolia live client", () => {
         { publicClient: publicClient() },
       ),
     ).rejects.toThrow(/must be a 20-byte EVM address/);
+  });
+});
+
+describe("PrivatePons mainnet live client", () => {
+  const ponsEnvironment = {
+    VITE_PRIVATE_LAUNCHPAD_FACTORY: factory,
+    VITE_ROBINHOOD_RPC_URL: "/robinhood-rpc",
+    VITE_ARBITRUM_RPC_URL: "/arbitrum-rpc",
+    VITE_RELAY_BRIDGE_URL: "/api/relay",
+    VITE_PRIVATE_LAUNCHPAD_RELAYER_URL: "/api/private-launchpad/v1/relay",
+  };
+
+  it("preflights Robinhood and selects the Relay funding transport", async () => {
+    const clientReader = publicClient(4663);
+    const loadBridge = vi.fn(async () => bridge);
+    const client = await createPonsMainnetLiveClient(ponsEnvironment, {
+      publicClient: clientReader,
+      loadBridge,
+    });
+    expect(client.config.chainId).toBe(4663);
+    expect(client.config.usdc).toBe(
+      "0x5fc5360D0400a0Fd4f2af552ADD042D716F1d168",
+    );
+    expect(client.config.fundingTransport).toBeTypeOf("function");
+    expect(client.config.depositTransport).toBeTypeOf("function");
+    expect(client.channel).toBe("pons-private-v1");
+    expect(loadBridge).toHaveBeenCalledWith({
+      environment: ponsEnvironment,
+      route: "pons-mainnet",
+    });
   });
 });

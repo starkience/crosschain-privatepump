@@ -1,6 +1,10 @@
 import { describe, expect, it, vi } from "vitest";
 import type { RelayExecutionRequest } from "./types.js";
-import { createHttpRelay, relayExecutionRequestJson } from "./relay-http.js";
+import {
+  createHttpRelay,
+  RelayerRejectedError,
+  relayExecutionRequestJson,
+} from "./relay-http.js";
 
 const request: RelayExecutionRequest = {
   chainId: 84532,
@@ -66,9 +70,20 @@ describe("HTTP relay transport", () => {
     const rejected = createHttpRelay({
       endpoint: "https://relay.example/v1/relay",
       fetch: async () =>
-        Response.json({ error: "target not allowed" }, { status: 400 }),
+        Response.json(
+          { error: "target not allowed", requestId: "relay-request-1" },
+          { status: 400 },
+        ),
     });
     await expect(rejected(request)).rejects.toThrow(/target not allowed/);
+    await rejected(request).catch((error: unknown) => {
+      expect(error).toBeInstanceOf(RelayerRejectedError);
+      expect(error).toMatchObject({
+        status: 400,
+        requestId: "relay-request-1",
+        broadcasted: false,
+      });
+    });
 
     const malformed = createHttpRelay({
       endpoint: "https://relay.example/v1/relay",

@@ -8,13 +8,19 @@ import { signExecution } from "./execution.js";
 import {
   NO_RELAYER_FEE,
   type ExecuteOptions,
+  type ExecutionConfirmation,
   type BridgeFundResult,
+  type BridgeDepositResult,
+  type BridgeDepositStepCallback,
+  type BridgeCashOutResult,
+  type BridgeCashOutStepCallback,
   type BridgeReturnResult,
   type BridgeStepCallback,
   type ExecutionCall,
   type LaunchpadAdapter,
   type PrivateLaunchpadClientConfig,
   type PrivateLaunchpadSession,
+  type Eip1193Provider,
   type RelayExecutionRequest,
   type RelayerFee,
 } from "./types.js";
@@ -53,6 +59,81 @@ export class PrivateLaunchpadClient {
     return { accountIndex, channel: this.channel, owner, account };
   }
 
+  async readPrivateBalance(signature: string): Promise<bigint> {
+    if (!/^0x[0-9a-fA-F]+$/.test(signature)) {
+      throw new Error("identity signature must be hex");
+    }
+    return this.config.bridge.readPrivateBalance(signature);
+  }
+
+  /** Returns USDC already minted on Starknet but not yet deposited to STRK20. */
+  async readPendingDeposit(signature: string): Promise<bigint> {
+    if (!/^0x[0-9a-fA-F]+$/.test(signature)) {
+      throw new Error("identity signature must be hex");
+    }
+    return this.config.bridge.readPendingDeposit(signature);
+  }
+
+  /**
+   * Deposits EVM USDC into the user's STRK20-backed private balance. The source
+   * wallet and deposit amount remain public at the bridge edge; later position
+   * withdrawals are unlinkable inside the pool.
+   */
+  async depositToPrivateBalance(args: {
+    signature: string;
+    amount: bigint;
+    provider: Eip1193Provider;
+    sourceChainId?: number;
+    resume?: boolean;
+    onStep?: BridgeDepositStepCallback;
+    onBurned?: (info: { burnTxHash: string; explorerUrl?: string }) => void;
+  }): Promise<BridgeDepositResult> {
+    if (!/^0x[0-9a-fA-F]+$/.test(args.signature)) {
+      throw new Error("identity signature must be hex");
+    }
+    if (args.amount <= 0n) throw new Error("deposit amount must be positive");
+    if (this.config.depositTransport) {
+      return this.config.depositTransport({
+        bridge: this.config.bridge,
+        signature: args.signature,
+        amount: args.amount,
+        provider: args.provider,
+        resume: args.resume ?? false,
+        ...(args.onStep ? { onStep: args.onStep } : {}),
+        ...(args.onBurned ? { onBurned: args.onBurned } : {}),
+      });
+    }
+    return this.config.bridge.moveIntoPool({
+      signature: args.signature as Hex,
+      funding: "metamask",
+      amountWei: args.amount,
+      provider: args.provider,
+      sourceChainId: args.sourceChainId ?? this.config.chainId,
+      ...(args.resume === undefined ? {} : { resume: args.resume }),
+      ...(args.onStep === undefined ? {} : { onStep: args.onStep }),
+      ...(args.onBurned === undefined ? {} : { onBurned: args.onBurned }),
+    });
+  }
+
+  /** Withdraws private-balance USDC to a public EVM destination. */
+  async withdrawPrivateBalance(args: {
+    signature: string;
+    amount: bigint;
+    destination: Address;
+    connectedEvmAddress: Address;
+    onStep?: BridgeCashOutStepCallback;
+  }): Promise<BridgeCashOutResult> {
+    if (args.amount <= 0n) throw new Error("withdraw amount must be positive");
+    return this.config.bridge.cashOut({
+      resolveSignature: async () => args.signature,
+      amount: args.amount,
+      destination: args.destination,
+      evmAddress: args.connectedEvmAddress,
+      destChainId: this.config.chainId,
+      ...(args.onStep === undefined ? {} : { onStep: args.onStep }),
+    });
+  }
+
   async fundSession(args: {
     signature: string;
     accountIndex: number;
@@ -62,6 +143,17 @@ export class PrivateLaunchpadClient {
     onStep?: BridgeStepCallback;
   }): Promise<BridgeFundResult> {
     const session = await this.deriveSession(args.signature, args.accountIndex);
+    if (this.config.fundingTransport) {
+      return this.config.fundingTransport({
+        bridge: this.config.bridge,
+        signature: args.signature,
+        session,
+        amount: args.amount,
+        connectedEvmAddress: args.connectedEvmAddress,
+        fast: args.fast ?? true,
+        ...(args.onStep ? { onStep: args.onStep } : {}),
+      });
+    }
     return this.config.bridge.fundAccountFromPool({
       resolveSignature: async () => args.signature,
       accountIndex: args.accountIndex,
@@ -122,6 +214,46 @@ export class PrivateLaunchpadClient {
     return this.config.relay(request);
   }
 
+  /**
+   * Waits until Base has included an execution. A returned transaction hash is
+   * only proof of broadcast; callers should use this before showing success.
+   */
+  async waitForExecution(
+    transactionHash: Hash,
+  ): Promise<ExecutionConfirmation> {
+    const receipt = await this.config.publicClient.waitForTransactionReceipt({
+      hash: transactionHash,
+      confirmations: 1,
+      timeout: 120_000,
+    });
+    return {
+      transactionHash,
+      status: receipt.status,
+      blockNumber: receipt.blockNumber,
+    };
+  }
+
+  /** Reads an ERC-20 balance held by a derived private-position account. */
+  async readSessionTokenBalance(
+    session: PrivateLaunchpadSession,
+    token: Address,
+  ): Promise<bigint> {
+    return this.readAccountTokenBalance(session.account, token);
+  }
+
+  /** Reads an ERC-20 balance from a known position account without deriving it. */
+  async readAccountTokenBalance(
+    account: Address,
+    token: Address,
+  ): Promise<bigint> {
+    return this.config.publicClient.readContract({
+      address: token,
+      abi: erc20Abi,
+      functionName: "balanceOf",
+      args: [account],
+    });
+  }
+
   async returnSession(args: {
     signature: string;
     session: PrivateLaunchpadSession;
@@ -138,6 +270,38 @@ export class PrivateLaunchpadClient {
         functionName: "balanceOf",
         args: [args.session.account],
       });
+
+    if (this.config.returnTransport) {
+      const balance = await readBalance();
+      const feeInUsdc =
+        fee.token.toLowerCase() === this.config.usdc.toLowerCase()
+          ? fee.amount
+          : 0n;
+      const maximum = balance > feeInUsdc ? balance - feeInUsdc : 0n;
+      const amount = args.amount ?? maximum;
+      if (amount <= 0n || amount > maximum) {
+        throw new Error(
+          `invalid return amount: maximum after relayer fee is ${maximum}`,
+        );
+      }
+      return this.config.returnTransport({
+        bridge: this.config.bridge,
+        signature: args.signature,
+        session: args.session,
+        connectedEvmAddress: args.connectedEvmAddress,
+        amount,
+        submitCalls: (calls, context) =>
+          this.execute(args.signature, args.session, calls, {
+            fee,
+            ...(context?.relayRequestId
+              ? { relayRequestId: context.relayRequestId }
+              : {}),
+          }),
+        waitForExecution: (transactionHash) =>
+          this.waitForExecution(transactionHash),
+        ...(args.onStep ? { onStep: args.onStep } : {}),
+      });
+    }
 
     return this.config.bridge.returnToPool({
       signature: args.signature,
@@ -233,6 +397,9 @@ export class PrivateLaunchpadClient {
     const signedCalls = [...calls];
     const relaySignature = await signExecution({
       privateKey,
+      ...(this.config.executionDomainName
+        ? { executionDomainName: this.config.executionDomainName }
+        : {}),
       chainId: this.config.chainId,
       account: session.account,
       calls: signedCalls,
@@ -253,6 +420,9 @@ export class PrivateLaunchpadClient {
       prefund,
       fee,
       signature: relaySignature,
+      ...(options.relayRequestId
+        ? { relayRequestId: options.relayRequestId }
+        : {}),
     };
   }
 

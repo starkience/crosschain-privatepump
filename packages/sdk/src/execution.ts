@@ -14,6 +14,8 @@ const CALL_TYPEHASH = keccak256(
   stringToHex("Call(address target,uint256 value,bytes data)"),
 );
 
+export const DEFAULT_EXECUTION_DOMAIN_NAME = "PrivateLaunchpadAccount";
+
 export const executionTypes = {
   Execution: [
     { name: "callsHash", type: "bytes32" },
@@ -42,6 +44,7 @@ export function hashExecutionCalls(calls: readonly ExecutionCall[]): Hex {
 
 export interface SignExecutionArgs {
   privateKey: Hex;
+  executionDomainName?: string;
   chainId: number;
   account: Address;
   calls: readonly ExecutionCall[];
@@ -56,7 +59,7 @@ export function executionTypedData(
 ) {
   return {
     domain: {
-      name: "PrivateLaunchpadAccount",
+      name: args.executionDomainName ?? DEFAULT_EXECUTION_DOMAIN_NAME,
       version: "1",
       chainId: args.chainId,
       verifyingContract: args.account,
