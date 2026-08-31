@@ -10,9 +10,12 @@
   },
   "scripts": {
     "build": "pnpm --filter @private-launchpad/sdk build && pnpm --filter @private-launchpad/demo build && pnpm --filter @private-launchpad/relayer build && pnpm build:evm",
+    "build:vercel": "pnpm build:official-bridge && pnpm --filter @private-launchpad/sdk build && pnpm --filter @private-launchpad/demo build",
     "build:official-bridge": "node scripts/build-official-bridge.mjs",
     "build:evm": "pnpm setup:evm && forge build --root evm",
-    "typecheck": "pnpm --filter @private-launchpad/sdk build && pnpm --filter @private-launchpad/demo typecheck && pnpm --filter @private-launchpad/relayer typecheck",
+    "preflight:starkscan": "node --env-file-if-exists=.env.local scripts/preflight-starkscan.mjs",
+    "typecheck": "pnpm --filter @private-launchpad/sdk build && pnpm --filter @private-launchpad/demo typecheck && pnpm --filter @private-launchpad/relayer typecheck && pnpm typecheck:vercel",
+    "typecheck:vercel": "tsc -p api/tsconfig.json --noEmit",
     "test": "pnpm test:sdk && pnpm test:demo && pnpm test:relayer && pnpm test:evm",
     "test:sdk": "pnpm --filter @private-launchpad/sdk test",
     "test:demo": "pnpm --filter @private-launchpad/demo test",
@@ -20,9 +23,11 @@
     "test:evm": "pnpm setup:evm && forge test --root evm",
     "setup:evm": "cd evm && forge soldeer install --config-location foundry",
     "verify:sepolia": "node scripts/verify-sepolia.mjs",
-    "format:check": "prettier --check 'scripts/**/*.mjs' 'docs/**/*.md' 'config/**/*.json' '.github/workflows/*.yml' package.json pnpm-workspace.yaml README.md && pnpm --filter @private-launchpad/sdk format:check && pnpm --filter @private-launchpad/demo format:check && pnpm --filter @private-launchpad/relayer format:check && forge fmt --root evm --check"
+    "format:check": "prettier --check 'api/**/*.{ts,json}' 'scripts/**/*.mjs' 'docs/**/*.md' 'config/**/*.json' '.github/workflows/*.yml' package.json pnpm-workspace.yaml vercel.json README.md && pnpm --filter @private-launchpad/sdk format:check && pnpm --filter @private-launchpad/demo format:check && pnpm --filter @private-launchpad/relayer format:check && forge fmt --root evm --check"
   },
   "devDependencies": {
-    "prettier": "^3.6.2"
+    "@types/node": "^24.3.0",
+    "prettier": "^3.6.2",
+    "typescript": "^5.9.2"
   }
 }

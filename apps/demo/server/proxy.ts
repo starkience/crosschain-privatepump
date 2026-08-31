@@ -1,6 +1,38 @@
-const MAX_BODY_BYTES = 512 * 1024;
+import { Buffer } from "node:buffer";
+import type {
+  IncomingHttpHeaders,
+  IncomingMessage,
+  ServerResponse,
+} from "node:http";
+import { relayStarkscanProverRequest } from "../src/starkscan-prover-relay.js";
+import {
+  createStarkscanProverStateStoreFromEnv,
+  type StarkscanProverStateStore,
+} from "../src/starkscan-prover-store.js";
 
-const SERVICES = Object.freeze({
+const MAX_BODY_BYTES = 1024 * 1024;
+
+type ServiceKind =
+  | "evm-rpc"
+  | "starknet-rpc"
+  | "privacy-service"
+  | "starkscan-prover"
+  | "avnu"
+  | "relay";
+
+interface Service {
+  readonly environment: string;
+  readonly kind: ServiceKind;
+  readonly methods: readonly string[];
+  readonly headerEnvironment?: string;
+  readonly header?: string;
+}
+
+interface ProxyRequest extends IncomingMessage {
+  readonly body?: unknown;
+}
+
+const SERVICES: Readonly<Record<string, Service>> = Object.freeze({
   base: {
     environment: "BASE_SEPOLIA_RPC_URL",
     kind: "evm-rpc",
@@ -37,9 +69,10 @@ const SERVICES = Object.freeze({
     methods: ["GET", "POST"],
   },
   "prover-mainnet": {
-    environment: "STRK20_MAINNET_PROVER_URL",
-    kind: "privacy-service",
-    methods: ["GET", "POST"],
+    environment: "STARKSCAN_PROVER_URL",
+    headerEnvironment: "STARKSCAN_API_KEY",
+    kind: "starkscan-prover",
+    methods: ["POST"],
   },
   "indexer-mainnet": {
     environment: "STRK20_MAINNET_INDEXER_URL",
@@ -93,7 +126,12 @@ const AVNU_METHODS = new Set([
 
 export const config = { maxDuration: 60 };
 
-export default async function handler(request, response) {
+let proverStateStore: StarkscanProverStateStore | undefined;
+
+export default async function handler(
+  request: ProxyRequest,
+  response: ServerResponse,
+): Promise<void> {
   response.setHeader("cache-control", "no-store");
   response.setHeader("x-content-type-options", "nosniff");
 
@@ -116,6 +154,25 @@ export default async function handler(request, response) {
     if (!upstreamValue) {
       return json(response, 503, { error: "upstream is not configured" });
     }
+    if (service.kind === "starkscan-prover") {
+      const credential = process.env[service.headerEnvironment!];
+      if (!credential) {
+        return json(response, 503, {
+          error: "upstream credential is not configured",
+        });
+      }
+      proverStateStore ??= createStarkscanProverStateStoreFromEnv(process.env);
+      const result = await relayStarkscanProverRequest(parseJson(body), {
+        endpoint: upstreamValue,
+        apiKey: credential,
+        stateStore: proverStateStore,
+      });
+      if (result.retryAfter) {
+        response.setHeader("retry-after", result.retryAfter);
+      }
+      return json(response, result.status, result.body);
+    }
+
     const upstream = upstreamUrl(upstreamValue, incoming);
     const headers = forwardHeaders(request.headers);
     if (service.headerEnvironment && service.header) {
@@ -131,7 +188,7 @@ export default async function handler(request, response) {
     const result = await fetch(upstream, {
       method,
       headers,
-      body,
+      ...(body ? { body: Uint8Array.from(body) } : {}),
       redirect: "manual",
       signal: AbortSignal.timeout(55_000),
     });
@@ -145,14 +202,11 @@ export default async function handler(request, response) {
   } catch (error) {
     const message =
       error instanceof Error ? error.message : "proxy request failed";
-    const status = /too large|invalid|not allowed|unsupported/.test(message)
-      ? 400
-      : 502;
-    json(response, status, { error: message });
+    json(response, proxyErrorStatus(message), { error: message });
   }
 }
 
-function upstreamUrl(value, incoming) {
+function upstreamUrl(value: string, incoming: URL): URL {
   const target = new URL(value);
   if (target.protocol !== "https:") throw new Error("upstream must use HTTPS");
 
@@ -164,13 +218,19 @@ function upstreamUrl(value, incoming) {
     target.pathname = `${target.pathname.replace(/\/$/, "")}/${forwardedPath.replace(/^\/+/, "")}`;
   }
   for (const [name, value] of incoming.searchParams) {
-    if (name !== "service" && name !== "path")
+    if (name !== "service" && name !== "path") {
       target.searchParams.append(name, value);
+    }
   }
   return target;
 }
 
-function validateRequest(kind, method, incoming, body) {
+function validateRequest(
+  kind: ServiceKind,
+  method: string,
+  incoming: URL,
+  body: Buffer | undefined,
+): void {
   const path = `/${(incoming.searchParams.get("path") || "").replace(/^\/+/, "")}`;
   if (kind === "relay") {
     const allowed =
@@ -179,19 +239,31 @@ function validateRequest(kind, method, incoming, body) {
     if (!allowed) throw new Error("Relay path is not allowed");
   }
   if (kind === "privacy-service" && !path.startsWith("/v1/")) {
-    throw new Error("privacy-service path is not allowed");
+    if (path !== "/") throw new Error("privacy-service path is not allowed");
   }
-  if (kind === "evm-rpc")
+  if (kind === "starkscan-prover") {
+    if (method !== "POST" || path !== "/") {
+      throw new Error("Starkscan prover path is not allowed");
+    }
+  }
+  if (kind === "evm-rpc") {
     validateJsonRpc(body, (name) => EVM_METHODS.has(name));
-  if (kind === "starknet-rpc")
+  }
+  if (kind === "starknet-rpc") {
     validateJsonRpc(body, (name) => name.startsWith("starknet_"));
-  if (kind === "avnu") validateJsonRpc(body, (name) => AVNU_METHODS.has(name));
+  }
+  if (kind === "avnu") {
+    validateJsonRpc(body, (name) => AVNU_METHODS.has(name));
+  }
 }
 
-function validateJsonRpc(body, allows) {
-  let payload;
+function validateJsonRpc(
+  body: Buffer | undefined,
+  allows: (method: string) => boolean,
+): void {
+  let payload: unknown;
   try {
-    payload = JSON.parse(body?.toString("utf8") || "");
+    payload = JSON.parse(body?.toString("utf8") || "") as unknown;
   } catch {
     throw new Error("invalid JSON-RPC body");
   }
@@ -200,13 +272,20 @@ function validateJsonRpc(body, allows) {
     throw new Error("invalid JSON-RPC batch");
   }
   for (const entry of requests) {
-    if (!entry || typeof entry !== "object" || !allows(entry.method)) {
+    if (!entry || typeof entry !== "object" || Array.isArray(entry)) {
+      throw new Error("JSON-RPC method is not allowed");
+    }
+    const method = (entry as Record<string, unknown>).method;
+    if (typeof method !== "string" || !allows(method)) {
       throw new Error("JSON-RPC method is not allowed");
     }
   }
 }
 
-async function requestBody(request, method) {
+async function requestBody(
+  request: ProxyRequest,
+  method: string,
+): Promise<Buffer | undefined> {
   if (method === "GET" || method === "HEAD") return undefined;
   if (request.body !== undefined && request.body !== null) {
     const body = Buffer.isBuffer(request.body)
@@ -219,7 +298,7 @@ async function requestBody(request, method) {
     if (body.length > MAX_BODY_BYTES) throw new Error("request body too large");
     return body;
   }
-  const chunks = [];
+  const chunks: Buffer[] = [];
   let size = 0;
   for await (const chunk of request) {
     const value = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
@@ -230,7 +309,15 @@ async function requestBody(request, method) {
   return Buffer.concat(chunks);
 }
 
-function forwardHeaders(source) {
+function parseJson(body: Buffer | undefined): unknown {
+  try {
+    return JSON.parse(body?.toString("utf8") || "") as unknown;
+  } catch {
+    throw new Error("invalid JSON request body");
+  }
+}
+
+function forwardHeaders(source: IncomingHttpHeaders): Headers {
   const headers = new Headers();
   for (const name of ["accept", "content-type"]) {
     const value = source[name];
@@ -240,7 +327,20 @@ function forwardHeaders(source) {
   return headers;
 }
 
-function json(response, status, body) {
+function proxyErrorStatus(message: string): number {
+  if (/proof state|PROVER_STATE_/i.test(message)) return 503;
+  return /too large|invalid|required|not allowed|must|only|explicit|sender|unsupported/i.test(
+    message,
+  )
+    ? 400
+    : 502;
+}
+
+function json(
+  response: ServerResponse,
+  status: number,
+  body: Record<string, unknown>,
+): void {
   response.statusCode = status;
   response.setHeader("content-type", "application/json; charset=utf-8");
   response.end(JSON.stringify(body));

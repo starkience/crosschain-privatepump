@@ -40,9 +40,22 @@ normal package-bundled path when that CSP exception is undesirable.
 pnpm --filter @private-launchpad/demo dev
 ```
 
-The Vite server proxies privacy services, AVNU, Base RPC, the policy relayer, and Clanker quote route
-from the same origin. Copy `.env.example` to `.env.local`; keep preview mode until every live value
-is set. `UNISWAP_API_KEY` and `AVNU_PAYMASTER_API_KEY` stay server-side and must never use `VITE_`.
+The Vite server proxies privacy services, AVNU, RPCs, Relay, and the policy relayer from the same
+origin. On mainnet, `/prover/mainnet` adapts the Privacy SDK's existing synchronous JSON-RPC call to
+Starkscan's asynchronous proving jobs. Set `STARKSCAN_PROVER_URL` and `STARKSCAN_API_KEY` only in
+the server environment; the key must never use `VITE_` or appear in browser code. Run
+`pnpm preflight:starkscan` to authenticate the key, verify its `prove` scope, and safely check that
+the mainnet route is enabled without creating a proof job.
+
+The production proxy additionally requires an Upstash-compatible Redis REST store. It keeps a
+non-sensitive job cursor for safe idempotent retries and encrypts the complete one-time proof result
+with `PROVER_STATE_ENCRYPTION_KEY` before retaining it for at most five minutes. Development uses a
+process-local store; production fails with HTTP 503 before creating a proof when durable storage is
+not configured.
+
+Copy `.env.example` to `.env.local`; keep preview mode until every live value is set.
+`UNISWAP_API_KEY`, `AVNU_PAYMASTER_API_KEY`, `RELAY_API_KEY`, and `STARKSCAN_API_KEY` stay
+server-side and must never use `VITE_`.
 
 Do not relabel the app as live until the Base account factory, relayer, official privacy bridge,
 proving service, discovery service, Circle attestation path, host adapter, and Base Sepolia Uniswap

@@ -43,10 +43,18 @@ update the pinned commits intentionally when upstream releases change; never fol
 in a production build.
 
 `apps/demo/vite.config.ts` provides development-only same-origin proxies. Copy `.env.example` to an
-ignored `.env.local` and supply the Starknet RPC, prover, indexer, and AVNU values there. The AVNU
-credential is server-side; the browser carries only `same-origin-proxy`. A production host must
-provide equivalent endpoints, use OHTTP for prover/discovery traffic, and overwrite the AVNU header
-at its edge. Do not put RPC credentials, a real paymaster key, or an admin private key in `VITE_*`.
+ignored `.env.local` and supply the Starknet RPC, indexer, Starkscan prover, Relay, and AVNU values
+there. The Starkscan mainnet adapter accepts the Privacy SDK's `starknet_proveTransaction` JSON-RPC
+request at `/prover/mainnet`, derives a stable idempotency key from its proof inputs, submits the
+authenticated asynchronous job, polls it, and returns the proof in the SDK's expected JSON-RPC
+shape. The Starkscan, Relay, and AVNU credentials remain server-side. A production host must deploy
+the equivalent edge handlers and set `STARKSCAN_PROVER_URL` plus `STARKSCAN_API_KEY` in its runtime
+environment. It must also provide `PROVER_STATE_REST_URL`, `PROVER_STATE_REST_TOKEN`, and a random
+32-byte `PROVER_STATE_ENCRYPTION_KEY`. The adapter stores the non-sensitive job cursor for one day,
+but retains the encrypted one-time proof/error payload for no more than five minutes. The pinned
+bridge build records a transport-only retry patch in its provenance manifest so asynchronous proofs
+can remain pending for several minutes without changing bridge cryptography. Do not put RPC
+credentials, a real prover/paymaster key, or an admin private key in `VITE_*`.
 
 Never ask the user for a viewing key. The bridge's low-level SDK route is appropriate here because
 the application derives and holds its own key material from the identity signature. A pure Starknet

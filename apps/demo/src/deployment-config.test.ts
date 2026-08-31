@@ -11,7 +11,7 @@ interface VercelConfig {
   rewrites: Rewrite[];
 }
 
-const configPath = resolve(process.cwd(), "public/vercel.json");
+const configPath = resolve(process.cwd(), "../../vercel.json");
 const config = JSON.parse(readFileSync(configPath, "utf8")) as VercelConfig;
 
 describe("production privacy-service rewrites", () => {

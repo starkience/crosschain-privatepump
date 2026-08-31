@@ -1,7 +1,10 @@
 import { defineConfig } from "vitest/config";
+import { Buffer } from "node:buffer";
 import { fileURLToPath } from "node:url";
 import react from "@vitejs/plugin-react";
-import { loadEnv, type ProxyOptions } from "vite";
+import { loadEnv, type Plugin, type ProxyOptions } from "vite";
+import { relayStarkscanProverRequest } from "./src/starkscan-prover-relay.js";
+import { createMemoryStarkscanProverStateStore } from "./src/starkscan-prover-store.js";
 
 const environmentDirectory = fileURLToPath(new URL("../..", import.meta.url));
 
@@ -51,12 +54,21 @@ export default defineConfig(({ mode }) => {
     bridgeCompatibleStarknetRpcUrl(environment.STARKNET_MAINNET_RPC_URL),
     "STARKNET_MAINNET_RPC_URL",
   );
-  addProxy(
-    proxy,
-    "/prover/mainnet",
-    environment.STRK20_MAINNET_PROVER_URL,
-    "STRK20_MAINNET_PROVER_URL",
-  );
+  const starkscanProver =
+    environment.STARKSCAN_API_KEY && environment.STARKSCAN_PROVER_URL
+      ? createStarkscanProverPlugin(
+          environment.STARKSCAN_PROVER_URL,
+          environment.STARKSCAN_API_KEY,
+        )
+      : undefined;
+  if (!starkscanProver) {
+    addProxy(
+      proxy,
+      "/prover/mainnet",
+      environment.STRK20_MAINNET_PROVER_URL,
+      "STRK20_MAINNET_PROVER_URL",
+    );
+  }
   addProxy(
     proxy,
     "/indexer/mainnet",
@@ -94,12 +106,12 @@ export default defineConfig(({ mode }) => {
 
   return {
     envDir: environmentDirectory,
-    plugins: [react()],
+    plugins: [react(), ...(starkscanProver ? [starkscanProver] : [])],
     server: { port: 4173, proxy },
     preview: { port: 4173 },
     test: {
       environment: "jsdom",
-      include: ["src/**/*.test.{ts,tsx}"],
+      include: ["{src,server}/**/*.test.{ts,tsx}"],
     },
   };
 });
@@ -115,6 +127,79 @@ function bridgeCompatibleStarknetRpcUrl(
     /\/starknet\/version\/rpc\/v0_(?:7|8|9)\//,
     "/starknet/version/rpc/v0_10/",
   );
+}
+
+function createStarkscanProverPlugin(endpoint: string, apiKey: string): Plugin {
+  const stateStore = createMemoryStarkscanProverStateStore();
+  const install = (middlewares: {
+    use(
+      handler: (
+        request: import("node:http").IncomingMessage,
+        response: import("node:http").ServerResponse,
+        next: () => void,
+      ) => void,
+    ): void;
+  }) => {
+    middlewares.use(async (request, response, next) => {
+      const pathname = new URL(request.url ?? "/", "http://127.0.0.1").pathname;
+      if (pathname !== "/prover/mainnet") return next();
+      response.setHeader("cache-control", "no-store");
+      response.setHeader("x-content-type-options", "nosniff");
+      if (request.method !== "POST") {
+        response.statusCode = 405;
+        response.setHeader("allow", "POST");
+        response.end(JSON.stringify({ error: "method not allowed" }));
+        return;
+      }
+      try {
+        const result = await relayStarkscanProverRequest(
+          await readJsonBody(request),
+          { endpoint, apiKey, stateStore },
+        );
+        response.statusCode = result.status;
+        response.setHeader("content-type", "application/json; charset=utf-8");
+        if (result.retryAfter) {
+          response.setHeader("retry-after", result.retryAfter);
+        }
+        response.end(JSON.stringify(result.body));
+      } catch (error) {
+        const message =
+          error instanceof Error ? error.message : "prover proxy failed";
+        response.statusCode = /proof state|PROVER_STATE_/i.test(message)
+          ? 503
+          : /too large|invalid|required|not allowed|must|only|explicit|sender|unsupported/i.test(
+                message,
+              )
+            ? 400
+            : 502;
+        response.setHeader("content-type", "application/json; charset=utf-8");
+        response.end(JSON.stringify({ error: message }));
+      }
+    });
+  };
+  return {
+    name: "privatepons-starkscan-prover",
+    configureServer: (server) => install(server.middlewares),
+    configurePreviewServer: (server) => install(server.middlewares),
+  };
+}
+
+async function readJsonBody(
+  request: import("node:http").IncomingMessage,
+): Promise<unknown> {
+  const chunks: Buffer[] = [];
+  let size = 0;
+  for await (const chunk of request) {
+    const value = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+    size += value.length;
+    if (size > 1024 * 1024) throw new Error("prover request is too large");
+    chunks.push(value);
+  }
+  try {
+    return JSON.parse(Buffer.concat(chunks).toString("utf8")) as unknown;
+  } catch {
+    throw new Error("invalid prover JSON request");
+  }
 }
 
 function addProxy(

@@ -24,5 +24,10 @@
     "repository": "https://github.com/starkware-libs/privacy-bridge.git",
     "commit": "3e95694b997069c47eff52cd576af0bb3e03612d",
     "version": "0.1.22"
+  },
+  "proverTransport": {
+    "requestTimeoutMs": 25000,
+    "maxRetries": 12,
+    "baseDelayMs": 250
   }
 }

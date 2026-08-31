@@ -23,7 +23,7 @@ const outputDirectory = resolve(
 const pins = JSON.parse(
   await readFile(join(repositoryRoot, "config/official-bridge.json"), "utf8"),
 );
-const { sdk, bridge, requiredExports } = pins;
+const { sdk, bridge, proverTransport, requiredExports } = pins;
 validatePins(pins);
 
 const temporaryDirectory = await mkdtemp(
@@ -68,6 +68,7 @@ try {
   step("Fetching pinned Starknet Privacy Bridge source");
   checkout(bridge.repository, bridge.commit, bridgeRepository);
   await overrideBridgeSdk(bridgeRepository, sdkTarball);
+  await patchBridgeProverTransport(bridgeRepository, proverTransport);
   run(
     "pnpm",
     ["install", "--no-frozen-lockfile", "--ignore-scripts"],
@@ -112,6 +113,7 @@ try {
     requiredExports,
     sdk,
     bridge,
+    proverTransport,
     builder: {
       esbuild: output(esbuild, ["--version"], repositoryRoot),
       node: process.version,
@@ -198,6 +200,36 @@ async function overrideBridgeSdk(bridgeRepository, sdkTarball) {
   await writeFile(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`);
 }
 
+async function patchBridgeProverTransport(bridgeRepository, transport) {
+  const poolClientPath = join(
+    bridgeRepository,
+    "packages/bridge-core/src/core/poolClient.ts",
+  );
+  const source = await readFile(poolClientPath, "utf8");
+  const original = `    provingProvider: {
+      url: config.proverUrl,
+      chainId: config.chainId as constants.StarknetChainId,
+    },`;
+  const replacement = `    provingProvider: {
+      url: config.proverUrl,
+      chainId: config.chainId as constants.StarknetChainId,
+      // PrivatePons' same-origin relay turns Starkscan's asynchronous job into
+      // retryable HTTP 503 responses. Keep each request below the SDK's abort
+      // deadline and allow enough retries for multi-minute mainnet proofs.
+      requestTimeoutMs: ${transport.requestTimeoutMs},
+      retry: {
+        maxRetries: ${transport.maxRetries},
+        baseDelayMs: ${transport.baseDelayMs},
+      },
+    },`;
+  if (source.split(original).length !== 2) {
+    throw new Error(
+      "pinned privacy bridge poolClient.ts no longer matches the reviewed prover transport patch",
+    );
+  }
+  await writeFile(poolClientPath, source.replace(original, replacement));
+}
+
 async function singleTarball(directory, prefix) {
   const matches = (await readdir(directory)).filter(
     (name) => name.startsWith(prefix) && name.endsWith(".tgz"),
@@ -260,6 +292,13 @@ function validatePins(value) {
     value.schemaVersion !== 1 ||
     !validSource(value.sdk) ||
     !validSource(value.bridge) ||
+    !value.proverTransport ||
+    !Number.isSafeInteger(value.proverTransport.requestTimeoutMs) ||
+    value.proverTransport.requestTimeoutMs < 21_000 ||
+    !Number.isSafeInteger(value.proverTransport.maxRetries) ||
+    value.proverTransport.maxRetries < 4 ||
+    !Number.isSafeInteger(value.proverTransport.baseDelayMs) ||
+    value.proverTransport.baseDelayMs <= 0 ||
     JSON.stringify(value.requiredExports) !== JSON.stringify(expectedExports)
   ) {
     throw new Error("config/official-bridge.json is invalid");

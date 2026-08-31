@@ -1,6 +1,12 @@
 {
   "$schema": "https://openapi.vercel.sh/vercel.json",
   "framework": null,
+  "buildCommand": "pnpm build:vercel",
+  "outputDirectory": "apps/demo/dist",
+  "functions": {
+    "api/proxy.ts": { "maxDuration": 60 },
+    "api/private-relayer.ts": { "maxDuration": 60 }
+  },
   "rewrites": [
     { "source": "/base-rpc", "destination": "/api/proxy?service=base" },
     {

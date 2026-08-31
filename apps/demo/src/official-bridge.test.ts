@@ -32,6 +32,11 @@ const manifest = {
   requiredExports,
   sdk: { commit: "efc61cbbdab5b714b5cf915f9735d88948e2ea82" },
   bridge: { commit: "3e95694b997069c47eff52cd576af0bb3e03612d" },
+  proverTransport: {
+    requestTimeoutMs: 25_000,
+    maxRetries: 12,
+    baseDelayMs: 250,
+  },
 };
 
 const bridgeFunctions = {
@@ -160,6 +165,12 @@ describe("official bridge runtime loader", () => {
       validateOfficialBridgeManifest({
         ...manifest,
         requiredExports: requiredExports.slice(3),
+      }),
+    ).toThrow(/does not match pinned source/);
+    expect(() =>
+      validateOfficialBridgeManifest({
+        ...manifest,
+        proverTransport: { ...manifest.proverTransport, maxRetries: 3 },
       }),
     ).toThrow(/does not match pinned source/);
   });

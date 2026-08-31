@@ -48,6 +48,11 @@ interface OfficialBridgeManifest {
   requiredExports: readonly string[];
   sdk: { commit: string };
   bridge: { commit: string };
+  proverTransport: {
+    requestTimeoutMs: number;
+    maxRetries: number;
+    baseDelayMs: number;
+  };
 }
 
 interface OfficialBridgeEnvironment {
@@ -113,7 +118,9 @@ export function validateOfficialBridgeManifest(
     JSON.stringify(manifest.requiredExports) !==
       JSON.stringify(pins.requiredExports) ||
     manifest.sdk?.commit !== expectedPins.sdk ||
-    manifest.bridge?.commit !== expectedPins.bridge
+    manifest.bridge?.commit !== expectedPins.bridge ||
+    JSON.stringify(manifest.proverTransport) !==
+      JSON.stringify(pins.proverTransport)
   ) {
     throw new Error(
       "official privacy bridge manifest does not match pinned source",

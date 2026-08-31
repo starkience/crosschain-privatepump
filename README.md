@@ -54,7 +54,7 @@ is unavailable; it does not silently fall back to simulated activity.
 | Relay bridge client              | Validates strict USDC/USDG deposit routes, output minimums, status, and recovery cursors |
 
 Read [architecture](docs/architecture.md), [launchpad and liquidity flows](docs/launchpad-liquidity.md),
-and the [integration guide](docs/integration.md).
+the [integration guide](docs/integration.md), and the [Vercel mainnet deployment runbook](docs/vercel-mainnet.md).
 
 ## Repository
 
