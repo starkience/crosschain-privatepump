@@ -233,7 +233,9 @@ export function relayerFromEnv(
   // Keep the public and wallet transports distinct. Vercel's function
   // type-checker otherwise lets the wallet account generic bleed into the
   // public client when the same transport factory value is reused.
-  const publicClient = createPublicClient({ transport: http(rpcUrl) });
+  const publicClient = createPublicClient({
+    transport: http(rpcUrl),
+  }) as unknown as PublicClient;
   const walletClient = createWalletClient({
     account: relayerAccount,
     transport: http(rpcUrl),
