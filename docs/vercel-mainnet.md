@@ -37,8 +37,6 @@ Configure these in Vercel Preview scope and redeploy:
 ```text
 STARKSCAN_PROVER_URL
 STARKSCAN_API_KEY
-PROVER_STATE_REST_URL
-PROVER_STATE_REST_TOKEN
 PROVER_STATE_ENCRYPTION_KEY
 STARKNET_MAINNET_RPC_URL
 STRK20_MAINNET_INDEXER_URL
@@ -62,7 +60,9 @@ RELAY_RETURN_MAX_QUOTE_AGE_SECONDS
 If `RELAYER_FEE_AMOUNT` is nonzero, also configure `RELAYER_FEE_TOKEN` and
 `RELAYER_FEE_RECIPIENT`. Keep `ALLOW_UNSAFE_ANY_TARGETS=false`.
 
-`PROVER_STATE_REST_URL` and `PROVER_STATE_REST_TOKEN` target an Upstash-compatible Redis REST API.
+Link an Upstash for Redis resource to the project. Its managed `KV_REST_API_URL` and
+`KV_REST_API_TOKEN` variables are accepted directly. For a separately managed compatible service,
+set `PROVER_STATE_REST_URL` and `PROVER_STATE_REST_TOKEN` instead.
 Generate the cache encryption key locally with:
 
 ```sh

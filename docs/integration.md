@@ -49,8 +49,9 @@ request at `/prover/mainnet`, derives a stable idempotency key from its proof in
 authenticated asynchronous job, polls it, and returns the proof in the SDK's expected JSON-RPC
 shape. The Starkscan, Relay, and AVNU credentials remain server-side. A production host must deploy
 the equivalent edge handlers and set `STARKSCAN_PROVER_URL` plus `STARKSCAN_API_KEY` in its runtime
-environment. It must also provide `PROVER_STATE_REST_URL`, `PROVER_STATE_REST_TOKEN`, and a random
-32-byte `PROVER_STATE_ENCRYPTION_KEY`. The adapter stores the non-sensitive job cursor for one day,
+environment. It must also provide an Upstash-compatible Redis REST URL/token using either
+`PROVER_STATE_REST_*` or Vercel's managed `KV_REST_API_*` names, plus a random 32-byte
+`PROVER_STATE_ENCRYPTION_KEY`. The adapter stores the non-sensitive job cursor for one day,
 but retains the encrypted one-time proof/error payload for no more than five minutes. The pinned
 bridge build records a transport-only retry patch in its provenance manifest so asynchronous proofs
 can remain pending for several minutes without changing bridge cryptography. Do not put RPC

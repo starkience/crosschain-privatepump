@@ -5,6 +5,7 @@ import { describe, expect, it, vi } from "vitest";
 import {
   createMemoryStarkscanProverStateStore,
   createStarkscanProverStateStore,
+  createStarkscanProverStateStoreFromEnv,
 } from "./starkscan-prover-store.js";
 
 const ENCRYPTION_KEY = Buffer.alloc(32, 7).toString("base64url");
@@ -59,6 +60,29 @@ describe("Starkscan encrypted proof state store", () => {
         encryptionKey: "too-short",
       }),
     ).toThrow("exactly 32 bytes");
+  });
+
+  it("accepts the managed Vercel KV REST variable names", async () => {
+    const fetchImpl = vi
+      .fn()
+      .mockResolvedValue(Response.json({ result: null }));
+    const store = createStarkscanProverStateStoreFromEnv(
+      {
+        KV_REST_API_URL: "https://managed-kv.example",
+        KV_REST_API_TOKEN: "managed-token",
+        PROVER_STATE_ENCRYPTION_KEY: ENCRYPTION_KEY,
+      },
+      fetchImpl,
+    );
+
+    await expect(
+      store.get("proof:0123456789abcdef:cursor"),
+    ).resolves.toBeUndefined();
+    expect(String(fetchImpl.mock.calls[0]![0])).toBe(
+      "https://managed-kv.example/",
+    );
+    const headers = new Headers(fetchImpl.mock.calls[0]![1]?.headers);
+    expect(headers.get("authorization")).toBe("Bearer managed-token");
   });
 
   it("expires process-local development records", async () => {

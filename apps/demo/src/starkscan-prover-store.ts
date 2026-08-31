@@ -13,6 +13,8 @@ export interface StarkscanProverStateEnvironment {
   readonly PROVER_STATE_REST_URL?: string;
   readonly PROVER_STATE_REST_TOKEN?: string;
   readonly PROVER_STATE_ENCRYPTION_KEY?: string;
+  readonly KV_REST_API_URL?: string;
+  readonly KV_REST_API_TOKEN?: string;
 }
 
 export interface StarkscanProverStateStoreOptions {
@@ -92,11 +94,11 @@ export function createStarkscanProverStateStoreFromEnv(
 ): StarkscanProverStateStore {
   return createStarkscanProverStateStore({
     endpoint: required(
-      environment.PROVER_STATE_REST_URL,
+      environment.PROVER_STATE_REST_URL ?? environment.KV_REST_API_URL,
       "PROVER_STATE_REST_URL",
     ),
     token: required(
-      environment.PROVER_STATE_REST_TOKEN,
+      environment.PROVER_STATE_REST_TOKEN ?? environment.KV_REST_API_TOKEN,
       "PROVER_STATE_REST_TOKEN",
     ),
     encryptionKey: required(
