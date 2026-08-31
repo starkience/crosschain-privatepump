@@ -230,11 +230,13 @@ export function relayerFromEnv(
       "ALLOWED_TARGETS is required unless ALLOW_UNSAFE_ANY_TARGETS=true",
     );
   }
-  const transport = http(rpcUrl);
-  const publicClient = createPublicClient({ transport });
+  // Keep the public and wallet transports distinct. Vercel's function
+  // type-checker otherwise lets the wallet account generic bleed into the
+  // public client when the same transport factory value is reused.
+  const publicClient = createPublicClient({ transport: http(rpcUrl) });
   const walletClient = createWalletClient({
     account: relayerAccount,
-    transport,
+    transport: http(rpcUrl),
   });
 
   return new PrivateLaunchpadRelayer(
