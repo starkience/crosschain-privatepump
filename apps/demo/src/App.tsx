@@ -30,6 +30,7 @@ import { SunIcon } from "@phosphor-icons/react/dist/csr/Sun";
 import { VaultIcon } from "@phosphor-icons/react/dist/csr/Vault";
 import { WalletIcon } from "@phosphor-icons/react/dist/csr/Wallet";
 import {
+  PONS_V2_ROBINHOOD,
   RelayerRejectedError,
   type BridgeFundResult,
   type BridgeReturnResult,
@@ -86,6 +87,8 @@ const USDC_SCALE = 1_000_000n;
 const COMMON_USDC_AMOUNTS = [25, 50, 100, 250] as const;
 const MINIMUM_PRIVATE_REST_MINUTES = 2;
 const RANDOM_PRIVATE_REST_MINUTES = 4;
+const FRESH_ACCOUNT_BALANCE_READS = 20;
+const FRESH_ACCOUNT_BALANCE_POLL_MS = 1_000;
 const OFFICIAL_PONS_ORIGIN = "https://robinhood.ponslaunchpad.com";
 const USDG_ICON_URL =
   "https://424565.fs1.hubspotusercontent-na1.net/hubfs/424565/GDN_USDG_Token_32x32.png";
@@ -698,11 +701,44 @@ function errorMessage(error: unknown): string {
 
 function boundedRelayerDetail(message: string): string | undefined {
   const match = message.match(
-    /relayer rejected execution with status \d+\s*:\s*(.+)$/i,
+    /relayer rejected execution with status \d+\s*:\s*([\s\S]+)$/i,
   );
   const detail = match?.[1]?.replace(/\s+/g, " ").trim();
   if (!detail) return undefined;
   return detail.length > 240 ? `${detail.slice(0, 237)}…` : detail;
+}
+
+async function waitForFreshAccountUsdg(
+  runtime: LaunchpadRuntime,
+  account: PrivateLaunchpadSession["account"],
+  minimumAmount: bigint,
+  maximumAmount: bigint,
+  onWaiting?: (visibleBalance: bigint) => void,
+): Promise<bigint> {
+  if (minimumAmount <= 0n || maximumAmount < minimumAmount) {
+    throw new Error("Relay returned an invalid Robinhood funding amount");
+  }
+
+  let visibleBalance = 0n;
+  for (let attempt = 0; attempt < FRESH_ACCOUNT_BALANCE_READS; attempt += 1) {
+    visibleBalance = await runtime.readAccountTokenBalance(
+      account,
+      PONS_V2_ROBINHOOD.usdg,
+    );
+    if (visibleBalance >= minimumAmount) {
+      return visibleBalance < maximumAmount ? visibleBalance : maximumAmount;
+    }
+    onWaiting?.(visibleBalance);
+    if (attempt + 1 < FRESH_ACCOUNT_BALANCE_READS) {
+      await new Promise((resolve) =>
+        window.setTimeout(resolve, FRESH_ACCOUNT_BALANCE_POLL_MS),
+      );
+    }
+  }
+
+  throw new Error(
+    `Relay reported success, but only ${formatUsdcPrecise(visibleBalance)} USDG is visible in the fresh Robinhood account. No buy was submitted. The app saved the position so you can retry safely from Positions once the balance appears.`,
+  );
 }
 
 function isAmbiguousPaymasterSubmissionMessage(message: string): boolean {
@@ -2427,13 +2463,12 @@ export function App({ runtime }: AppProps) {
           },
         );
         const fundedIdentity = reconcileFundedIdentity(prepared, fundingResult);
-        const executableAmount =
-          fundingResult.minimumAmountDelivered ??
+        const quotedAmount =
           fundingResult.amountDelivered ??
+          fundingResult.minimumAmountDelivered ??
           tradeDraft.amountIn;
-        if (executableAmount <= 0n) {
-          throw new Error("The private bridge delivered no spendable USDG");
-        }
+        const minimumAmount =
+          fundingResult.minimumAmountDelivered ?? quotedAmount;
         setFunding(fundingResult);
         fundingDelivered = true;
         setPrivateBalance((balance) => balance - tradeDraft.amountIn);
@@ -2441,6 +2476,32 @@ export function App({ runtime }: AppProps) {
           status: "buying",
           accountIndex: fundedIdentity.session.accountIndex,
           account: fundedIdentity.session.account,
+          usdcCommitted: minimumAmount.toString(),
+        });
+        const executableAmount =
+          runtime.mode === "live"
+            ? await waitForFreshAccountUsdg(
+                runtime,
+                fundedIdentity.session.account,
+                minimumAmount,
+                quotedAmount,
+                (visibleBalance) =>
+                  updateExecutionLog("funding-relay", {
+                    status: "running",
+                    detail: `Relay completed; waiting for Robinhood RPC confirmation. ${formatUsdcPrecise(visibleBalance)} of at least ${formatUsdcPrecise(minimumAmount)} USDG is visible.`,
+                  }),
+              )
+            : minimumAmount;
+        if (executableAmount <= 0n) {
+          throw new Error("The private bridge delivered no spendable USDG");
+        }
+        if (runtime.mode === "live") {
+          updateExecutionLog("funding-relay", {
+            status: "done",
+            detail: `${formatUsdcPrecise(executableAmount)} USDG verified in the fresh Robinhood account.`,
+          });
+        }
+        patchPosition(rootAddress, positionId, {
           usdcCommitted: executableAmount.toString(),
         });
         setStage("executing");
@@ -2633,13 +2694,34 @@ export function App({ runtime }: AppProps) {
       updateExecutionLog("execution", {
         status: "running",
         detail:
-          "Requoting the Pons curve and submitting the existing fresh-account USDC to the policy relayer.",
+          "Verifying the existing fresh-account USDG before requoting the Pons curve.",
       });
-      const bought = await runtime.buy({
+      const savedAmount = BigInt(position.usdcCommitted);
+      const executableAmount =
+        runtime.mode === "live"
+          ? await waitForFreshAccountUsdg(
+              runtime,
+              prepared.session.account,
+              1n,
+              savedAmount,
+              (visibleBalance) =>
+                updateExecutionLog("execution", {
+                  status: "running",
+                  detail: `Waiting for the funded account balance to become visible on Robinhood RPC. Current balance: ${formatUsdcPrecise(visibleBalance)} USDG.`,
+                }),
+            )
+          : savedAmount;
+      const retryDraft: TradeDraft = {
         token: position.token,
-        amountIn: BigInt(position.usdcCommitted),
+        amountIn: executableAmount,
         slippageBps: 100,
+      };
+      await runtime.quoteBuy(prepared.session.account, retryDraft);
+      updateExecutionLog("execution", {
+        status: "running",
+        detail: `Verified ${formatUsdcPrecise(executableAmount)} USDG and a live Pons curve. Submitting to the policy relayer.`,
       });
+      const bought = await runtime.buy(retryDraft);
       updateExecutionLog("execution", {
         status: "done",
         detail: "The policy relayer accepted and broadcast the retry.",

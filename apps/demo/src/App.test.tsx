@@ -21,6 +21,7 @@ const session: PrivateLaunchpadSession = {
   account: "0x3333333333333333333333333333333333333333",
 };
 const LIVE_PONS_TOKEN = "0xD4f1C2Fb5eD5Ab256d41fefeC00fd40Dce6B7c86";
+const ROBINHOOD_USDG = "0x5fc5360D0400a0Fd4f2af552ADD042D716F1d168";
 
 afterEach(() => {
   cleanup();
@@ -559,6 +560,120 @@ describe("Plank interface", () => {
     expect(runtime.waitForTransaction).not.toHaveBeenCalled();
     expect(localStorage.getItem("privatepons-execution-process-v1")).toContain(
       "before broadcast",
+    );
+  });
+
+  it("shows the useful reason from a multiline relayer rejection", async () => {
+    const runtime = fixture("demo", "explore");
+    vi.mocked(runtime.buy).mockRejectedValue(
+      new RelayerRejectedError(
+        400,
+        'The contract function "deployAndExecute" reverted.\n\nReason: InsufficientAllowance()',
+        "relay-request-multiline",
+      ),
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: /night market/i }));
+    fireEvent.click(screen.getByRole("button", { name: /buy privately/i }));
+
+    expect(
+      await screen.findAllByText(/Reason: InsufficientAllowance\(\)/i),
+    ).not.toHaveLength(0);
+    expect(screen.getAllByText(/relay-request-multiline/i)).not.toHaveLength(0);
+  });
+
+  it("waits for the live Robinhood balance and buys only the visible USDG", async () => {
+    const readAccountTokenBalance = vi.fn(
+      async (_account: string, token: string) =>
+        token.toLowerCase() === ROBINHOOD_USDG.toLowerCase() ? 24_500_000n : 0n,
+    );
+    const runtime = fixture("live", "explore", {
+      readPrivateBalance: vi.fn(async () => 25_000_000n),
+      readAccountTokenBalance,
+      fund: vi.fn(async () => ({
+        burnTxHash: "0xburn",
+        accountIndex: session.accountIndex,
+        eoaAddress: session.owner,
+        depositWallet: session.account,
+        commitmentH: 1n,
+        forwardTxHash: "0xfund",
+        amountDelivered: 25_000_000n,
+        minimumAmountDelivered: 24_000_000n,
+      })),
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: /connect metamask/i }));
+    await screen.findByRole("button", { name: /metamask connected/i });
+    fireEvent.click(screen.getByRole("button", { name: /PonsDonate/i }));
+    fireEvent.click(screen.getByRole("button", { name: /buy privately/i }));
+
+    await waitFor(() => expect(runtime.buy).toHaveBeenCalledOnce());
+    expect(runtime.buy).toHaveBeenCalledWith(
+      expect.objectContaining({ amountIn: 24_500_000n }),
+    );
+    expect(readAccountTokenBalance).toHaveBeenCalledWith(
+      session.account,
+      ROBINHOOD_USDG,
+    );
+  });
+
+  it("rechecks the live USDG balance before retrying a rejected buy", async () => {
+    let fundingBalanceRead = true;
+    const readAccountTokenBalance = vi.fn(
+      async (_account: string, token: string) => {
+        if (token.toLowerCase() !== ROBINHOOD_USDG.toLowerCase()) return 0n;
+        if (fundingBalanceRead) {
+          fundingBalanceRead = false;
+          return 25_000_000n;
+        }
+        return 12_000_000n;
+      },
+    );
+    const runtime = fixture("live", "explore", {
+      readPrivateBalance: vi.fn(async () => 25_000_000n),
+      readAccountTokenBalance,
+      fund: vi.fn(async () => ({
+        burnTxHash: "0xburn",
+        accountIndex: session.accountIndex,
+        eoaAddress: session.owner,
+        depositWallet: session.account,
+        commitmentH: 1n,
+        forwardTxHash: "0xfund",
+        amountDelivered: 25_000_000n,
+        minimumAmountDelivered: 25_000_000n,
+      })),
+    });
+    vi.mocked(runtime.buy)
+      .mockRejectedValueOnce(
+        new RelayerRejectedError(400, "execution simulation failed", "first"),
+      )
+      .mockResolvedValueOnce({
+        transactionHash: `0x${"9".repeat(64)}`,
+        amountIn: 12_000_000n,
+        amountOut: 1_240_000n * 10n ** 18n,
+        minimumAmountOut: 1_227_600n * 10n ** 18n,
+      });
+
+    fireEvent.click(screen.getByRole("button", { name: /connect metamask/i }));
+    await screen.findByRole("button", { name: /metamask connected/i });
+    fireEvent.click(screen.getByRole("button", { name: /PonsDonate/i }));
+    fireEvent.click(screen.getByRole("button", { name: /buy privately/i }));
+    await screen.findAllByText(/execution simulation failed/i);
+
+    fireEvent.click(
+      within(
+        screen.getByRole("navigation", { name: /product navigation/i }),
+      ).getByRole("button", { name: /positions/i }),
+    );
+    fireEvent.click(await screen.findByRole("button", { name: /retry buy/i }));
+
+    await waitFor(() => expect(runtime.buy).toHaveBeenCalledTimes(2));
+    expect(runtime.buy).toHaveBeenLastCalledWith(
+      expect.objectContaining({ amountIn: 12_000_000n }),
+    );
+    expect(runtime.quoteBuy).toHaveBeenLastCalledWith(
+      session.account,
+      expect.objectContaining({ amountIn: 12_000_000n }),
     );
   });
 

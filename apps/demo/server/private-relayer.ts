@@ -68,7 +68,7 @@ export default async function handler(
       );
       return json(response, 202, { transactionHash, requestId });
     } catch (error) {
-      const message = error instanceof Error ? error.message : "unknown error";
+      const message = boundedErrorMessage(error);
       console.error(
         JSON.stringify({
           event: "relay.rejected",
@@ -84,9 +84,22 @@ export default async function handler(
       });
     }
   } catch (error) {
-    const message = error instanceof Error ? error.message : "relayer failed";
+    const message = boundedErrorMessage(error, "relayer failed");
     json(response, 503, { error: message });
   }
+}
+
+export function boundedErrorMessage(
+  error: unknown,
+  fallback = "unknown error",
+): string {
+  const raw = error instanceof Error ? error.message : fallback;
+  const reasonOnly = raw.split(
+    /\n\s*(?:Contract Call|Request Arguments|Raw Call Arguments):/i,
+  )[0]!;
+  const compact = reasonOnly.replace(/\s+/g, " ").trim() || fallback;
+  const redacted = compact.replace(/0x[0-9a-fA-F]{128,}/g, "[redacted hex]");
+  return redacted.length > 800 ? `${redacted.slice(0, 797)}…` : redacted;
 }
 
 function getRelayer(): PrivateLaunchpadRelayer {
