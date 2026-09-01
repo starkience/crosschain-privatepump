@@ -3369,7 +3369,7 @@ export function App({ runtime }: AppProps) {
                         type="number"
                         min="1"
                         step="0.01"
-                        value={launchBudget}
+                        value={launchBudget || ""}
                         disabled={busy || stage === "complete"}
                         onFocus={(event) => event.currentTarget.select()}
                         onWheel={releaseAmountInputOnWheel}
@@ -3829,12 +3829,12 @@ export function App({ runtime }: AppProps) {
                           step="0.000001"
                           value={
                             tradeSide === "buy"
-                              ? tradeAmount
+                              ? tradeAmount || ""
                               : activePosition?.tokenAmount
                                 ? formatTokenAmount(
                                     BigInt(activePosition.tokenAmount),
                                   )
-                                : 0
+                                : ""
                           }
                           disabled={busy || tradeSide === "sell"}
                           onWheel={releaseAmountInputOnWheel}
@@ -4650,7 +4650,7 @@ export function App({ runtime }: AppProps) {
                   min="0.000001"
                   step="0.000001"
                   inputMode="decimal"
-                  value={depositAmount}
+                  value={depositAmount || ""}
                   disabled={
                     busy || actionablePendingDeposit(pendingDepositBalance) > 0n
                   }

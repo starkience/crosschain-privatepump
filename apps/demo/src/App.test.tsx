@@ -233,7 +233,7 @@ describe("Plank interface", () => {
     expect(amount.classList.contains("numeric-amount-input")).toBe(true);
 
     fireEvent.change(amount, { target: { value: "-104" } });
-    expect(amount.value).toBe("0");
+    expect(amount.value).toBe("");
     expect(
       (
         screen.getByRole("button", {
@@ -246,6 +246,29 @@ describe("Plank interface", () => {
     fireEvent.wheel(amount, { deltaY: 100 });
     expect(document.activeElement).not.toBe(amount);
     expect(fireEvent.keyDown(amount, { key: "ArrowDown" })).toBe(false);
+  });
+
+  it("keeps cleared deposit and buy amounts empty until a digit is typed", () => {
+    fixture("demo", "explore");
+
+    fireEvent.click(screen.getByRole("button", { name: /^deposit$/i }));
+    const depositAmount = screen.getByRole("spinbutton", {
+      name: /deposit amount/i,
+    }) as HTMLInputElement;
+    fireEvent.change(depositAmount, { target: { value: "" } });
+    expect(depositAmount.value).toBe("");
+    fireEvent.change(depositAmount, { target: { value: "5" } });
+    expect(depositAmount.value).toBe("5");
+
+    fireEvent.click(screen.getByRole("button", { name: /close/i }));
+    fireEvent.click(screen.getByRole("button", { name: /night market/i }));
+    const buyAmount = screen.getByRole("spinbutton", {
+      name: /usdc amount/i,
+    }) as HTMLInputElement;
+    fireEvent.change(buyAmount, { target: { value: "" } });
+    expect(buyAmount.value).toBe("");
+    fireEvent.change(buyAmount, { target: { value: "5" } });
+    expect(buyAmount.value).toBe("5");
   });
 
   it("removes legacy transaction activity from the page and storage", () => {
