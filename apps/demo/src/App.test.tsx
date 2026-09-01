@@ -342,6 +342,33 @@ describe("Plank interface", () => {
     expect(runtime.deposit).not.toHaveBeenCalled();
   });
 
+  it("keeps an exhausted-prover deposit resumable without another public transfer", async () => {
+    const runtime = fixture("live");
+    vi.mocked(runtime.readPendingDeposit).mockResolvedValue(25_000_000n);
+    vi.mocked(runtime.resumeDeposit).mockRejectedValue(
+      new Error(
+        'Proving service HTTP 429: {"code":"prover_daily_budget_exhausted","message":"Daily proof budget of 10 exhausted for this key","requestId":"mzk-test-request"}',
+      ),
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: /connect metamask/i }));
+    fireEvent.click(
+      await screen.findByRole("button", { name: /finish deposit/i }),
+    );
+
+    expect(
+      await screen.findAllByText(/daily proof budget is exhausted/i),
+    ).not.toHaveLength(0);
+    expect(screen.getAllByText(/do not deposit again/i)).not.toHaveLength(0);
+    expect(screen.getAllByText(/mzk-test-request/i)).not.toHaveLength(0);
+    expect(
+      screen.getByRole("button", { name: /finish deposit/i }),
+    ).toBeTruthy();
+    expect(screen.queryByText(/prover_daily_budget_exhausted/i)).toBeNull();
+    expect(runtime.resumeDeposit).toHaveBeenCalledOnce();
+    expect(runtime.deposit).not.toHaveBeenCalled();
+  });
+
   it("treats post-deposit fee dust as complete instead of offering another resume", async () => {
     const runtime = fixture("live");
     vi.mocked(runtime.readPrivateBalance)

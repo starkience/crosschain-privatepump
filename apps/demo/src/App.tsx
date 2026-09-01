@@ -660,6 +660,17 @@ function positionStatusLabel(position: PrivatePosition): string {
 function errorMessage(error: unknown): string {
   const message =
     error instanceof Error ? error.message : "Something went wrong";
+  if (
+    /prover_daily_budget_exhausted/i.test(message) ||
+    /daily proof budget of \d+ exhausted/i.test(message)
+  ) {
+    const requestId = message.match(
+      /["']requestId["']\s*:\s*["']([a-z0-9-]{8,128})["']/i,
+    )?.[1];
+    return `Starkscan's daily proof budget is exhausted for this app. Your public transfer is already complete and the USDC remains safely staged on Starknet. Do not deposit again. Use Finish deposit after the quota resets or the production prover key is upgraded.${
+      requestId ? ` Starkscan reference: ${requestId}.` : ""
+    }`;
+  }
   const requestSuffix =
     error instanceof RelayerRejectedError && error.requestId
       ? ` Reference: ${error.requestId}.`
