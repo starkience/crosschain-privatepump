@@ -2759,8 +2759,13 @@ a {
   -moz-appearance: textfield;
 }
 
-.modal-amount input::-webkit-inner-spin-button,
-.modal-amount input::-webkit-outer-spin-button {
+.numeric-amount-input[type="number"] {
+  appearance: textfield;
+  -moz-appearance: textfield;
+}
+
+.numeric-amount-input::-webkit-inner-spin-button,
+.numeric-amount-input::-webkit-outer-spin-button {
   margin: 0;
   -webkit-appearance: none;
 }

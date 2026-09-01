@@ -223,6 +223,31 @@ describe("Plank interface", () => {
     expect(runtime.reset).toHaveBeenCalledOnce();
   });
 
+  it("keeps monetary inputs non-negative and immune to wheel or arrow stepping", () => {
+    fixture("demo", "explore");
+    fireEvent.click(screen.getByRole("button", { name: /night market/i }));
+
+    const amount = screen.getByRole("spinbutton", {
+      name: /usdc amount/i,
+    }) as HTMLInputElement;
+    expect(amount.classList.contains("numeric-amount-input")).toBe(true);
+
+    fireEvent.change(amount, { target: { value: "-104" } });
+    expect(amount.value).toBe("0");
+    expect(
+      (
+        screen.getByRole("button", {
+          name: /buy privately/i,
+        }) as HTMLButtonElement
+      ).disabled,
+    ).toBe(true);
+
+    amount.focus();
+    fireEvent.wheel(amount, { deltaY: 100 });
+    expect(document.activeElement).not.toBe(amount);
+    expect(fireEvent.keyDown(amount, { key: "ArrowDown" })).toBe(false);
+  });
+
   it("removes legacy transaction activity from the page and storage", () => {
     localStorage.setItem(
       "plank-launch-activity-8453",

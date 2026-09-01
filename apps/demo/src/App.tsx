@@ -6,7 +6,9 @@ import {
   useRef,
   useState,
   type ChangeEvent,
+  type KeyboardEvent,
   type ReactNode,
+  type WheelEvent,
 } from "react";
 import { ArrowRightIcon } from "@phosphor-icons/react/dist/csr/ArrowRight";
 import { CaretDownIcon } from "@phosphor-icons/react/dist/csr/CaretDown";
@@ -736,6 +738,23 @@ function usdcBaseUnits(value: number): bigint {
   if (!Number.isFinite(value) || value <= 0) return 0n;
   const [whole = "0", fraction = ""] = value.toFixed(6).split(".");
   return BigInt(whole) * USDC_SCALE + BigInt(fraction.padEnd(6, "0"));
+}
+
+function nonNegativeAmount(value: string): number {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : 0;
+}
+
+function releaseAmountInputOnWheel(event: WheelEvent<HTMLInputElement>) {
+  // Number inputs change value on wheel while focused. Releasing focus before
+  // the browser default keeps the amount stable and lets the page scroll.
+  event.currentTarget.blur();
+}
+
+function preventAmountArrowStep(event: KeyboardEvent<HTMLInputElement>) {
+  if (event.key === "ArrowUp" || event.key === "ArrowDown") {
+    event.preventDefault();
+  }
 }
 
 function formatWait(milliseconds: number): string {
@@ -3345,6 +3364,7 @@ export function App({ runtime }: AppProps) {
                     <span>Developer buy</span>
                     <span className="pons-launch-buy-field">
                       <input
+                        className="numeric-amount-input"
                         aria-label="Developer buy"
                         type="number"
                         min="1"
@@ -3352,8 +3372,10 @@ export function App({ runtime }: AppProps) {
                         value={launchBudget}
                         disabled={busy || stage === "complete"}
                         onFocus={(event) => event.currentTarget.select()}
+                        onWheel={releaseAmountInputOnWheel}
+                        onKeyDown={preventAmountArrowStep}
                         onChange={(event) =>
-                          setLaunchBudget(Number(event.target.value))
+                          setLaunchBudget(nonNegativeAmount(event.target.value))
                         }
                       />
                       <span>
@@ -3798,10 +3820,13 @@ export function App({ runtime }: AppProps) {
                       </span>
                       <div>
                         <input
+                          className="numeric-amount-input"
                           aria-label={
                             tradeSide === "buy" ? "USDC amount" : "Token amount"
                           }
                           type="number"
+                          min="0"
+                          step="0.000001"
                           value={
                             tradeSide === "buy"
                               ? tradeAmount
@@ -3812,8 +3837,12 @@ export function App({ runtime }: AppProps) {
                                 : 0
                           }
                           disabled={busy || tradeSide === "sell"}
+                          onWheel={releaseAmountInputOnWheel}
+                          onKeyDown={preventAmountArrowStep}
                           onChange={(event) =>
-                            setTradeAmount(Number(event.target.value))
+                            setTradeAmount(
+                              nonNegativeAmount(event.target.value),
+                            )
                           }
                         />
                         <b>
@@ -4611,6 +4640,7 @@ export function App({ runtime }: AppProps) {
               </span>
               <div className="modal-amount">
                 <input
+                  className="numeric-amount-input"
                   aria-label={
                     balanceModal === "deposit"
                       ? "Deposit amount"
@@ -4625,8 +4655,10 @@ export function App({ runtime }: AppProps) {
                     busy || actionablePendingDeposit(pendingDepositBalance) > 0n
                   }
                   onFocus={(event) => event.currentTarget.select()}
+                  onWheel={releaseAmountInputOnWheel}
+                  onKeyDown={preventAmountArrowStep}
                   onChange={(event) =>
-                    setDepositAmount(Number(event.target.value))
+                    setDepositAmount(nonNegativeAmount(event.target.value))
                   }
                 />
                 <b>{balanceModal === "deposit" ? "USDG" : "USDC"}</b>
