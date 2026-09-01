@@ -112,6 +112,10 @@ export interface LaunchpadRuntime {
   ): Promise<bigint>;
   readMarketMetadata?(token: TradeDraft["token"]): Promise<MarketMetadata>;
   recoverPositions?(): Promise<PrivatePosition[]>;
+  quoteBuy(
+    account: PrivateLaunchpadSession["account"],
+    draft: TradeDraft,
+  ): Promise<RuntimeTradeQuote>;
   quoteSell(
     account: PrivateLaunchpadSession["account"],
     draft: TradeDraft,
@@ -426,6 +430,19 @@ export function createLiveRuntime<
           },
         }
       : {}),
+    async quoteBuy(account, draft) {
+      if (!config.trade) throw new Error("launchpad trading is not configured");
+      // Quotes are read-only. They need the position account as msg.sender for
+      // call construction, but they do not need funded account state or secrets.
+      const quoteSession: PrivateLaunchpadSession = {
+        accountIndex: session?.accountIndex ?? 0,
+        channel: session?.channel ?? config.client.channel,
+        owner: session?.owner ?? account,
+        account,
+      };
+      const intent = await config.trade.buildIntent(draft, quoteSession);
+      return config.trade.quote("buy", intent, quoteSession);
+    },
     async quoteSell(account, draft) {
       if (!config.trade) throw new Error("launchpad trading is not configured");
       // Quotes are read-only. They need the position account as msg.sender for
@@ -600,6 +617,15 @@ export function createDemoRuntime(): LaunchpadRuntime {
     async readAccountTokenBalance() {
       if (!prepared) throw new Error("demo identity is not prepared");
       return 1_240_000n * 10n ** 18n;
+    },
+    async quoteBuy(_account, draft) {
+      if (!prepared) throw new Error("demo identity is not prepared");
+      return {
+        amountIn: draft.amountIn,
+        amountOut: 1_240_000n * 10n ** 18n,
+        minimumAmountOut: 1_227_600n * 10n ** 18n,
+        calls: [],
+      };
     },
     async quoteSell(_account, draft) {
       if (!prepared) throw new Error("demo identity is not prepared");

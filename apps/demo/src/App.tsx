@@ -103,6 +103,7 @@ interface PonsMarket {
   art: string;
   progress: number;
   live?: boolean;
+  privateTrading?: boolean;
   imageSources?: readonly string[];
 }
 
@@ -543,7 +544,7 @@ function createExecutionLog(
     {
       id: "execution",
       operation,
-      title: "Policy relayer broadcast",
+      title: "Pons quote and execution",
       status: "pending",
       detail: `A Pons ${operation.toLowerCase()} for $${symbol} will be quoted, authorized, and policy-checked.`,
       updatedAt: now,
@@ -681,12 +682,11 @@ function errorMessage(error: unknown): string {
       detail ? `: ${detail}` : "."
     } No Robinhood transaction was created and the USDG remains in the fresh account.${requestSuffix}`;
   }
-  if (
-    /tx already sent|transaction already (?:sent|submitted|known)/i.test(
-      message,
-    )
-  ) {
-    return "The paymaster found the same transaction already in flight. PonsButPrivate will reconcile it without repeating the public transfer.";
+  if (/relay quote/i.test(message) && /amount too low/i.test(message)) {
+    return "Relay cannot return this amount yet because it is too low to cover the swap fees and Arbitrum gas top-up. The USDG remains in the recorded fresh Robinhood account; retry when Relay fees are lower.";
+  }
+  if (isAmbiguousPaymasterSubmissionMessage(message)) {
+    return "The paymaster reports that this transaction was already submitted or its nonce was used. It may already have completed, so PonsButPrivate is reconciling onchain state without repeating the public transfer.";
   }
   return message;
 }
@@ -700,11 +700,19 @@ function boundedRelayerDetail(message: string): string | undefined {
   return detail.length > 240 ? `${detail.slice(0, 237)}…` : detail;
 }
 
-function isDuplicateSubmissionError(error: unknown): boolean {
-  const message = error instanceof Error ? error.message : String(error);
-  return /tx already sent|transaction already (?:sent|submitted|known)|already known/i.test(
-    message,
+function isAmbiguousPaymasterSubmissionMessage(message: string): boolean {
+  return (
+    /tx already sent|transaction already (?:sent|submitted|known)|already known/i.test(
+      message,
+    ) ||
+    (/nonce already used/i.test(message) &&
+      /paymaster|argent\/multicall-failed|code 156/i.test(message))
   );
+}
+
+function isAmbiguousPaymasterSubmissionError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error);
+  return isAmbiguousPaymasterSubmissionMessage(message);
 }
 
 function walletErrorCode(error: unknown): unknown {
@@ -1104,6 +1112,7 @@ export function App({ runtime }: AppProps) {
   const tradeValid =
     /^0x[0-9a-fA-F]{40}$/.test(token) &&
     tradeDraft.amountIn > 0n &&
+    selectedMarket.privateTrading !== false &&
     (tradeSide === "sell"
       ? holding
       : tradeDraft.amountIn <= privateBalanceAvailable);
@@ -1674,7 +1683,7 @@ export function App({ runtime }: AppProps) {
       token: market.token as PrivateLaunchpadSession["account"],
       description:
         market.version?.toLowerCase() === "v2"
-          ? "A graduated Pons V2 market available on Robinhood Chain."
+          ? "A graduated Pons V2 market on Robinhood Chain. Private graduated-market trading is not supported yet."
           : "A graduated Pons market on Robinhood Chain. Legacy pools may use a different execution adapter.",
       marketCap: formatUsdCompact(market.realMcapUsd ?? market.marketCapUsd),
       volume: "Graduated pool",
@@ -1684,6 +1693,7 @@ export function App({ runtime }: AppProps) {
       art: "night",
       progress: 100,
       live: true,
+      privateTrading: false,
       imageSources: ponsAssetUrls(market.logo),
     });
   }
@@ -1940,11 +1950,11 @@ export function App({ runtime }: AppProps) {
     } catch (reason) {
       updateDepositLog("reconcile", {
         status: "running",
-        detail: isDuplicateSubmissionError(reason)
-          ? "A duplicate paymaster submission was detected. Checking whether the original transaction already completed."
+        detail: isAmbiguousPaymasterSubmissionError(reason)
+          ? "An ambiguous paymaster submission was detected. Checking whether the original transaction already completed."
           : "Checking balances before reporting a failure.",
       });
-      if (isDuplicateSubmissionError(reason)) {
+      if (isAmbiguousPaymasterSubmissionError(reason)) {
         try {
           const [remaining, recoveredBalance] = await Promise.all([
             runtime.readPendingDeposit(),
@@ -2119,7 +2129,9 @@ export function App({ runtime }: AppProps) {
       }
       setStage("idle");
       updateDepositLog("reconcile", {
-        status: isDuplicateSubmissionError(reason) ? "running" : "error",
+        status: isAmbiguousPaymasterSubmissionError(reason)
+          ? "running"
+          : "error",
         detail: errorMessage(reason),
       });
       setError(errorMessage(reason));
@@ -2341,6 +2353,17 @@ export function App({ runtime }: AppProps) {
         updateExecutionLog("identity", {
           status: "done",
           detail: `Fresh account ${shorten(prepared.session.account, 10, 8)} prepared. Secret key material was not logged.`,
+        });
+        updateExecutionLog("execution", {
+          status: "running",
+          detail:
+            "Checking that this token is still on a live Pons bonding curve before moving private funds.",
+        });
+        await runtime.quoteBuy(prepared.session.account, tradeDraft);
+        updateExecutionLog("execution", {
+          status: "pending",
+          detail:
+            "Live Pons curve confirmed. Execution will be quoted again after funding.",
         });
         positionId = createPositionId();
         setActivePositionId(positionId);
@@ -3713,6 +3736,13 @@ export function App({ runtime }: AppProps) {
                       Private
                     </b>
                   </header>
+                  {selectedMarket.privateTrading === false && (
+                    <div className="error-banner" role="status">
+                      This token has graduated from the Pons bonding curve.
+                      Private graduated-market trading is not supported yet, so
+                      no funds will be moved.
+                    </div>
+                  )}
                   <div
                     className="trade-tabs"
                     role="group"
@@ -3863,7 +3893,9 @@ export function App({ runtime }: AppProps) {
                     >
                       <span>
                         {busyLabel ??
-                          `${tradeSide === "buy" ? "Buy" : "Sell"} privately`}
+                          (selectedMarket.privateTrading === false
+                            ? "Graduated trading unavailable"
+                            : `${tradeSide === "buy" ? "Buy" : "Sell"} privately`)}
                       </span>
                       <b>{tradeSide === "buy" ? "↗" : "↙"}</b>
                     </button>

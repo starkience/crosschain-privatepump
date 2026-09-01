@@ -31,6 +31,7 @@ export const ROBINHOOD_USDG = getAddress(
 
 const TRANSFER_SELECTOR = "0xa9059cbb";
 const DEFAULT_CURSOR_KEY = "private-pons.relay-funding.v1";
+const DEFAULT_PRIVATE_TRANSFER_FEE_BUFFER = 500_000n;
 
 export interface RelayBridgeQuote {
   requestId: string;
@@ -96,6 +97,7 @@ export interface RelayFundingTransportOptions {
   relay: RelayBridgeClient;
   storage?: RelayFundingStorage;
   cursorKey?: string;
+  privateTransferFeeBuffer?: bigint;
 }
 
 export interface RelayDepositTransportOptions {
@@ -313,7 +315,8 @@ export function createRelayReturnTransport(
   options: RelayReturnTransportOptions,
 ): SessionReturnTransport {
   const arbitrumRpcUrl = options.arbitrumRpcUrl ?? "/arbitrum-rpc";
-  const feeBuffer = options.privateTransferFeeBuffer ?? 500_000n;
+  const feeBuffer =
+    options.privateTransferFeeBuffer ?? DEFAULT_PRIVATE_TRANSFER_FEE_BUFFER;
   return async (args) => {
     if (
       !args.bridge.deriveStarknetAddress ||
@@ -347,12 +350,23 @@ export function createRelayReturnTransport(
       "running",
       "routing Pons USDG to the private return account",
     );
-    const quote = await options.relay.quoteRobinhoodUsdgToArbitrumUsdc({
-      user: args.session.account,
-      recipient: staging.address,
-      refundTo: args.session.owner,
-      amount: args.amount,
-    });
+    let quote: RelayBridgeQuote;
+    try {
+      quote = await options.relay.quoteRobinhoodUsdgToArbitrumUsdc({
+        user: args.session.account,
+        recipient: staging.address,
+        refundTo: args.session.owner,
+        amount: args.amount,
+      });
+    } catch (error) {
+      if (isRelayAmountTooLow(error)) {
+        throw new Error(
+          `Relay cannot return ${formatSixDecimalAmount(args.amount)} USDG right now because the amount is too low to cover swap fees and the Arbitrum gas top-up. The funds remain in the fresh Robinhood account; retry when Relay fees are lower.`,
+          { cause: error },
+        );
+      }
+      throw error;
+    }
     if (BigInt(quote.depositTransaction.value) !== 0n) {
       throw new Error("Relay return unexpectedly requires native value");
     }
@@ -573,6 +587,8 @@ export function createRelayFundingTransport(
 ): SessionFundingTransport {
   const storage = options.storage ?? browserStorage();
   const cursorKey = options.cursorKey ?? DEFAULT_CURSOR_KEY;
+  const privateTransferFeeBuffer =
+    options.privateTransferFeeBuffer ?? DEFAULT_PRIVATE_TRANSFER_FEE_BUFFER;
 
   return async (args): Promise<BridgeFundResult> => {
     if (!args.bridge.quoteCctpOut || !args.bridge.bridgeOutToDeposit) {
@@ -627,6 +643,47 @@ export function createRelayFundingTransport(
       refundTo: args.session.owner,
       amount: relayInput,
     });
+
+    // Fail closed before the private withdrawal. A buy position is only safe
+    // to create when its slippage-protected output can also fund the reverse
+    // Relay route (including the Arbitrum gas top-up used by STRK20 return).
+    const returnSignature = derivePrivateReturnSignature(
+      args.signature as Hex,
+      args.session.accountIndex,
+    );
+    const returnStaging = args.bridge.deriveEvmOwner(
+      returnSignature,
+      args.session.accountIndex,
+      "pons-return-staging-v1",
+    );
+    args.onStep?.(
+      "relay",
+      "running",
+      "checking that the funded amount can be returned privately",
+    );
+    let recoveryQuote: RelayBridgeQuote;
+    try {
+      recoveryQuote = await options.relay.quoteRobinhoodUsdgToArbitrumUsdc({
+        user: args.session.account,
+        recipient: returnStaging.address,
+        refundTo: args.session.owner,
+        amount: quote.minimumOutputAmount,
+      });
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : String(error);
+      const reason = isRelayAmountTooLow(error)
+        ? `${formatSixDecimalAmount(quote.minimumOutputAmount)} USDG is below Relay's current recovery minimum`
+        : `Relay could not verify the recovery route: ${detail}`;
+      throw new Error(
+        `Relay recovery preflight failed before any funds moved: ${reason}. Increase the private buy amount and try again.`,
+        { cause: error },
+      );
+    }
+    if (recoveryQuote.minimumOutputAmount <= privateTransferFeeBuffer) {
+      throw new Error(
+        `Relay recovery preflight failed before any funds moved: the reverse route would deliver only ${formatSixDecimalAmount(recoveryQuote.minimumOutputAmount)} USDC, but the final private merge requires more than ${formatSixDecimalAmount(privateTransferFeeBuffer)} USDC. Increase the private buy amount and try again.`,
+      );
+    }
 
     args.onStep?.(
       "bridge",
@@ -1115,4 +1172,20 @@ function relayHttpError(label: string, status: number, body: unknown): Error {
   return new Error(
     `${label} failed with HTTP ${status}${typeof message === "string" ? `: ${message}` : ""}`,
   );
+}
+
+function isRelayAmountTooLow(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error);
+  return /amount too low(?: to cover swap fees and gas top[ -]?up)?/i.test(
+    message,
+  );
+}
+
+function formatSixDecimalAmount(amount: bigint): string {
+  const whole = amount / 1_000_000n;
+  const fraction = (amount % 1_000_000n)
+    .toString()
+    .padStart(6, "0")
+    .replace(/0+$/, "");
+  return fraction ? `${whole}.${fraction}` : whole.toString();
 }

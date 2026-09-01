@@ -17,3 +17,5 @@ evm/dependencies/
 
 # Existing Cairo workspace
 contracts/target/
+.vercel
+.env*.local

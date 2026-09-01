@@ -130,6 +130,26 @@ export async function createPrivatePonsLiveRuntime(
           args: [getAddress(draft.token)],
         });
         if (!launch.exists) throw new Error("Pons token is not registered");
+        if (launch.phase === 1) {
+          throw new Error(
+            "This Pons market has been swept and is no longer tradable on its bonding curve",
+          );
+        }
+        if (launch.phase === 2) {
+          throw new Error(
+            "This Pons market has graduated to V4; private graduated-market trading is not available yet",
+          );
+        }
+        if (launch.phase === 3) {
+          throw new Error(
+            "This Pons market was rescued and is no longer tradable on its bonding curve",
+          );
+        }
+        if (launch.phase !== 0) {
+          throw new Error(
+            `This Pons market is in unsupported phase ${launch.phase}`,
+          );
+        }
         return {
           token: getAddress(draft.token),
           curve: getAddress(launch.curve),

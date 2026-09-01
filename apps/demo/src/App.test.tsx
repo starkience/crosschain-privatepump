@@ -91,6 +91,12 @@ function fixture(
     })),
     readTokenBalance: vi.fn(async () => 1_240_000n * 10n ** 18n),
     readAccountTokenBalance: vi.fn(async () => 1_240_000n * 10n ** 18n),
+    quoteBuy: vi.fn(async (_account, draft) => ({
+      amountIn: draft.amountIn,
+      amountOut: 1_240_000n * 10n ** 18n,
+      minimumAmountOut: 1_227_600n * 10n ** 18n,
+      calls: [],
+    })),
     quoteSell: vi.fn(async (_account, draft) => ({
       amountIn: draft.amountIn,
       amountOut: 24_200_000n,
@@ -177,7 +183,7 @@ describe("Plank interface", () => {
   });
 
   it("opens a graduated token from the homepage", () => {
-    fixture("demo", "explore");
+    const runtime = fixture("demo", "explore");
 
     const graduated = screen.getByRole("region", { name: /graduated/i });
     fireEvent.click(
@@ -188,6 +194,16 @@ describe("Plank interface", () => {
       0,
     );
     expect(screen.getByText(/graduated Pons market/i)).toBeTruthy();
+    expect(
+      screen.getByText(
+        /private graduated-market trading is not supported yet/i,
+      ),
+    ).toBeTruthy();
+    const tradeButton = screen.getByRole("button", {
+      name: /graduated trading unavailable/i,
+    }) as HTMLButtonElement;
+    expect(tradeButton.disabled).toBe(true);
+    expect(runtime.fund).not.toHaveBeenCalled();
   });
 
   it("opens a market from the new Explore surface", () => {
@@ -488,7 +504,7 @@ describe("Plank interface", () => {
     expect(
       await screen.findByRole("heading", { name: /transaction logger/i }),
     ).toBeTruthy();
-    expect(screen.getByText(/policy relayer broadcast/i)).toBeTruthy();
+    expect(screen.getByText(/Pons quote and execution/i)).toBeTruthy();
     expect(
       await screen.findAllByText(/no buy transaction was created/i),
     ).not.toHaveLength(0);
@@ -498,11 +514,11 @@ describe("Plank interface", () => {
     );
   });
 
-  it("recovers a duplicate paymaster submission without a second public transfer", async () => {
+  it("reconciles an AVNU nonce-used response without a second public transfer", async () => {
     const runtime = fixture("demo", "explore");
     vi.mocked(runtime.deposit).mockRejectedValue(
       new Error(
-        "AVNU paymaster paymaster_executeTransaction error (code 156): An error occurred (TRANSACTION_EXECUTION_ERROR): execution error Tx already sent",
+        "AVNU paymaster paymaster_executeTransaction error (code 156): execution error argent/multicall-failed, Nonce already used, ENTRYPOINT_FAILED",
       ),
     );
     vi.mocked(runtime.readPendingDeposit).mockResolvedValue(3_000_000n);
@@ -521,9 +537,29 @@ describe("Plank interface", () => {
       await screen.findByRole("heading", { name: /finish STRK20 deposit/i }),
     ).toBeTruthy();
     expect(screen.getByText(/ready to resume safely/i)).toBeTruthy();
-    expect(screen.queryByText(/execution error Tx already sent/i)).toBeNull();
+    expect(screen.queryByText(/ENTRYPOINT_FAILED/i)).toBeNull();
     expect(runtime.deposit).toHaveBeenCalledOnce();
     expect(runtime.resumeDeposit).not.toHaveBeenCalled();
+  });
+
+  it("rejects an unavailable Pons curve before funding a fresh account", async () => {
+    const runtime = fixture("demo", "explore", {
+      quoteBuy: vi.fn(async () => {
+        throw new Error(
+          "This Pons market has graduated to V4; private graduated-market trading is not available yet",
+        );
+      }),
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: /night market/i }));
+    fireEvent.click(screen.getByRole("button", { name: /buy privately/i }));
+
+    expect(
+      await screen.findAllByText(/graduated to V4.*not available yet/i),
+    ).not.toHaveLength(0);
+    expect(runtime.quoteBuy).toHaveBeenCalledOnce();
+    expect(runtime.fund).not.toHaveBeenCalled();
+    expect(runtime.buy).not.toHaveBeenCalled();
   });
 
   it("only offers launches funded through STRK20", async () => {

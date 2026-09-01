@@ -259,6 +259,48 @@ describe("Relay cross-chain bridge", () => {
     );
   });
 
+  it("keeps small returned positions recoverable when Relay fees are too high", async () => {
+    const transport = createRelayReturnTransport({
+      relay: {
+        quoteRobinhoodUsdgToArbitrumUsdc: vi.fn(async () => {
+          throw new Error(
+            "Relay quote failed with HTTP 400: Amount too low to cover swap fees and gas top up",
+          );
+        }),
+        quoteArbitrumUsdcToRobinhoodUsdg: vi.fn(),
+        getStatus: vi.fn(),
+        waitForSuccess: vi.fn(),
+      },
+    });
+    const bridge = {
+      deriveStarknetAddress: vi.fn(() => "0x1234"),
+      sendPrivateToStarknet: vi.fn(),
+      deriveEvmOwner: vi.fn(() => ({
+        address: OWNER,
+        privateKey: `0x${"12".repeat(32)}`,
+      })),
+    } as unknown as PrivacyBridgeEngine;
+
+    await expect(
+      transport({
+        bridge,
+        signature: `0x${"34".repeat(65)}`,
+        session: {
+          owner: OWNER,
+          account: ACCOUNT,
+          accountIndex: 2,
+          channel: "pons-private-v1",
+        },
+        connectedEvmAddress: CONNECTED,
+        amount: 700_000n,
+        submitCalls: vi.fn(),
+        waitForExecution: vi.fn(),
+      }),
+    ).rejects.toThrow(
+      /cannot return 0\.7 USDG.*funds remain in the fresh Robinhood account/i,
+    );
+  });
+
   it("persists the burn before polling and returns the protected USDG amount", async () => {
     const storage = new MemoryStorage();
     const waitForSuccess = vi.fn(async () => {
@@ -290,6 +332,10 @@ describe("Relay cross-chain bridge", () => {
         finalityThreshold: 1_000,
       })),
       bridgeOutToDeposit,
+      deriveEvmOwner: vi.fn(() => ({
+        address: OWNER,
+        privateKey: `0x${"12".repeat(32)}`,
+      })),
     } as unknown as PrivacyBridgeEngine;
     const transport = createRelayFundingTransport({
       storage,
@@ -300,6 +346,27 @@ describe("Relay cross-chain bridge", () => {
           outputAmount: 995_000n,
           minimumOutputAmount: 990_000n,
           depositAddress: DEPOSIT,
+          depositTransaction: {
+            chainId: 42161,
+            from: OWNER,
+            to: ARBITRUM_NATIVE_USDC,
+            data: transferData(DEPOSIT, 999_000n),
+            value: "0x0" as const,
+          },
+        })),
+        quoteRobinhoodUsdgToArbitrumUsdc: vi.fn(async () => ({
+          requestId: `0x${"cd".repeat(32)}`,
+          inputAmount: 990_000n,
+          outputAmount: 975_000n,
+          minimumOutputAmount: 965_000n,
+          depositAddress: DEPOSIT,
+          depositTransaction: {
+            chainId: 4663,
+            from: ACCOUNT,
+            to: ROBINHOOD_USDG,
+            data: transferData(DEPOSIT, 990_000n),
+            value: "0x0" as const,
+          },
         })),
         getStatus: vi.fn(),
         waitForSuccess,
@@ -330,5 +397,76 @@ describe("Relay cross-chain bridge", () => {
       relayStatus: "success",
     });
     expect(storage.values.size).toBe(0);
+  });
+
+  it("rejects an unrecoverable funding amount before burning private funds", async () => {
+    const bridgeOutToDeposit = vi.fn();
+    const bridge = {
+      quoteCctpOut: vi.fn(async () => ({
+        maxFee: 1_000n,
+        forwardFee: 900n,
+        protocolFee: 100n,
+        finalityThreshold: 1_000,
+      })),
+      bridgeOutToDeposit,
+      deriveEvmOwner: vi.fn(() => ({
+        address: OWNER,
+        privateKey: `0x${"12".repeat(32)}`,
+      })),
+    } as unknown as PrivacyBridgeEngine;
+    const transport = createRelayFundingTransport({
+      storage: new MemoryStorage(),
+      relay: {
+        quoteArbitrumUsdcToRobinhoodUsdg: vi.fn(async () => ({
+          requestId: `0x${"ab".repeat(32)}`,
+          inputAmount: 999_000n,
+          outputAmount: 705_000n,
+          minimumOutputAmount: 700_000n,
+          depositAddress: DEPOSIT,
+          depositTransaction: {
+            chainId: 42161,
+            from: OWNER,
+            to: ARBITRUM_NATIVE_USDC,
+            data: transferData(DEPOSIT, 999_000n),
+            value: "0x0" as const,
+          },
+        })),
+        quoteRobinhoodUsdgToArbitrumUsdc: vi.fn(async () => ({
+          requestId: `0x${"cd".repeat(32)}`,
+          inputAmount: 700_000n,
+          outputAmount: 96_964n,
+          minimumOutputAmount: 95_995n,
+          depositAddress: DEPOSIT,
+          depositTransaction: {
+            chainId: 4663,
+            from: ACCOUNT,
+            to: ROBINHOOD_USDG,
+            data: transferData(DEPOSIT, 700_000n),
+            value: "0x0" as const,
+          },
+        })),
+        getStatus: vi.fn(),
+        waitForSuccess: vi.fn(),
+      },
+    });
+
+    await expect(
+      transport({
+        bridge,
+        signature: "0x1234",
+        session: {
+          owner: OWNER,
+          account: ACCOUNT,
+          accountIndex: 2,
+          channel: "private-launchpad-v1",
+        },
+        amount: 1_000_000n,
+        connectedEvmAddress: CONNECTED,
+        fast: true,
+      }),
+    ).rejects.toThrow(
+      /recovery preflight failed before any funds moved.*only 0\.095995 USDC.*more than 0\.5 USDC.*Increase/i,
+    );
+    expect(bridgeOutToDeposit).not.toHaveBeenCalled();
   });
 });
