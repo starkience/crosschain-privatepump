@@ -213,9 +213,9 @@ async function patchBridgeProverTransport(bridgeRepository, transport) {
   const replacement = `    provingProvider: {
       url: config.proverUrl,
       chainId: config.chainId as constants.StarknetChainId,
-      // PrivatePons' same-origin relay turns Starkscan's asynchronous job into
-      // retryable HTTP 503 responses. Keep each request below the SDK's abort
-      // deadline and allow enough retries for multi-minute mainnet proofs.
+      // PrivatePons supports one long synchronous StarkWare request as well as
+      // Starkscan's asynchronous jobs, which surface as retryable HTTP 503s.
+      // The client deadline remains below the Vercel function ceiling.
       requestTimeoutMs: ${transport.requestTimeoutMs},
       retry: {
         maxRetries: ${transport.maxRetries},

@@ -18,7 +18,7 @@ not depend on an ignored artifact left on a developer machine.
 
 The two functions are:
 
-- `api/proxy.ts`: allowlisted RPC, AVNU, Relay, discovery, and Starkscan prover transport.
+- `api/proxy.ts`: allowlisted RPC, AVNU, Relay, discovery, and selectable mainnet prover transport.
 - `api/private-relayer.ts`: Pons semantic-policy relayer.
 
 Do not deploy `apps/demo/dist` as a separate static project. The repository-root deployment is what
@@ -27,7 +27,7 @@ keeps the functions and rewrites attached to the frontend.
 ## Required protection
 
 Use a protected Preview deployment for the first canary. Until authentication and rate limiting are
-added, a public URL could consume Starkscan proof budget, Relay/AVNU quota, or relayer gas. Do not
+added, a public URL could consume prover capacity, Relay/AVNU quota, or relayer gas. Do not
 promote the deployment to Production merely because the build succeeds.
 
 ## Server-only environment
@@ -35,6 +35,8 @@ promote the deployment to Production merely because the build succeeds.
 Configure these in Vercel Preview scope and redeploy:
 
 ```text
+PROVER_PROVIDER=starkware
+STRK20_MAINNET_PROVER_URL
 STARKSCAN_PROVER_URL
 STARKSCAN_API_KEY
 PROVER_STATE_ENCRYPTION_KEY
@@ -93,13 +95,15 @@ VITE_PRIVATE_LAUNCHPAD_RELAYER_URL=/api/private-launchpad/v1/relay
 
 ## Gates before funds move
 
-1. `pnpm preflight:starkscan` authenticates the approved key without creating a job.
+1. The selected mainnet prover responds to a non-proving JSON-RPC validation request. For the
+   optional fallback, `pnpm preflight:starkscan` authenticates the approved key without creating a
+   job.
 2. The protected deployment loads the pinned bridge manifest and reports live mainnet mode.
 3. `/api/private-launchpad/healthz` returns `readyForBroadcast: true`.
 4. RPC chain IDs, deployed factory bytecode, a Relay quote, and AVNU availability pass through the
    deployed same-origin routes.
-5. A malformed request to `/prover/mainnet` reaches the Starkscan adapter and is rejected as invalid
-   JSON-RPC; it must never return `privacy-service path is not allowed`.
+5. A malformed request to `/prover/mainnet` reaches the selected prover adapter and is rejected as
+   invalid JSON-RPC; it must never return `privacy-service path is not allowed`.
 
 Only then run the minimum-size funded deposit → existing-token buy → sell/return canary. Keep the
 same normal browser profile throughout so the bridge recovery cursors remain available.

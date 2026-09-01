@@ -33,7 +33,7 @@ const manifest = {
   sdk: { commit: "efc61cbbdab5b714b5cf915f9735d88948e2ea82" },
   bridge: { commit: "3e95694b997069c47eff52cd576af0bb3e03612d" },
   proverTransport: {
-    requestTimeoutMs: 25_000,
+    requestTimeoutMs: 285_000,
     maxRetries: 12,
     baseDelayMs: 250,
   },

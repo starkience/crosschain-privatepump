@@ -43,18 +43,20 @@ update the pinned commits intentionally when upstream releases change; never fol
 in a production build.
 
 `apps/demo/vite.config.ts` provides development-only same-origin proxies. Copy `.env.example` to an
-ignored `.env.local` and supply the Starknet RPC, indexer, Starkscan prover, Relay, and AVNU values
-there. The Starkscan mainnet adapter accepts the Privacy SDK's `starknet_proveTransaction` JSON-RPC
-request at `/prover/mainnet`, derives a stable idempotency key from its proof inputs, submits the
-authenticated asynchronous job, polls it, and returns the proof in the SDK's expected JSON-RPC
-shape. The Starkscan, Relay, and AVNU credentials remain server-side. A production host must deploy
-the equivalent edge handlers and set `STARKSCAN_PROVER_URL` plus `STARKSCAN_API_KEY` in its runtime
-environment. It must also provide an Upstash-compatible Redis REST URL/token using either
+ignored `.env.local` and supply the Starknet RPC, indexer, prover, Relay, and AVNU values there.
+`PROVER_PROVIDER=starkware` sends the Privacy SDK's `starknet_proveTransaction` JSON-RPC request to
+the synchronous `STRK20_MAINNET_PROVER_URL` and briefly caches a completed result for response-loss
+recovery. `PROVER_PROVIDER=starkscan` remains an optional fallback: the adapter derives a stable
+idempotency key, submits the authenticated asynchronous job, polls it, and returns the proof in the
+SDK's expected JSON-RPC shape. Prover, Relay, and AVNU credentials remain server-side. A production
+host must deploy the equivalent edge handlers. It must also provide an Upstash-compatible Redis
+REST URL/token using either
 `PROVER_STATE_REST_*` or Vercel's managed `KV_REST_API_*` names, plus a random 32-byte
 `PROVER_STATE_ENCRYPTION_KEY`. The adapter stores the non-sensitive job cursor for one day,
 but retains the encrypted one-time proof/error payload for no more than five minutes. The pinned
-bridge build records a transport-only retry patch in its provenance manifest so asynchronous proofs
-can remain pending for several minutes without changing bridge cryptography. Do not put RPC
+bridge build records a transport-only timeout/retry patch in its provenance manifest so synchronous
+StarkWare proofs and asynchronous Starkscan proofs can remain pending without changing bridge
+cryptography. Do not put RPC
 credentials, a real prover/paymaster key, or an admin private key in `VITE_*`.
 
 Never ask the user for a viewing key. The bridge's low-level SDK route is appropriate here because

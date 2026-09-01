@@ -5,6 +5,7 @@ import react from "@vitejs/plugin-react";
 import { loadEnv, type Plugin, type ProxyOptions } from "vite";
 import { relayStarkscanProverRequest } from "./src/starkscan-prover-relay.js";
 import { createMemoryStarkscanProverStateStore } from "./src/starkscan-prover-store.js";
+import { relayStarkwareProverRequest } from "./src/starkware-prover-relay.js";
 
 const environmentDirectory = fileURLToPath(new URL("../..", import.meta.url));
 
@@ -54,19 +55,26 @@ export default defineConfig(({ mode }) => {
     bridgeCompatibleStarknetRpcUrl(environment.STARKNET_MAINNET_RPC_URL),
     "STARKNET_MAINNET_RPC_URL",
   );
-  const starkscanProver =
-    environment.STARKSCAN_API_KEY && environment.STARKSCAN_PROVER_URL
-      ? createStarkscanProverPlugin(
-          environment.STARKSCAN_PROVER_URL,
-          environment.STARKSCAN_API_KEY,
-        )
-      : undefined;
-  if (!starkscanProver) {
+  const proverProvider = mainnetProverProvider(environment.PROVER_PROVIDER);
+  const mainnetProver =
+    proverProvider === "starkware" && environment.STRK20_MAINNET_PROVER_URL
+      ? createStarkwareProverPlugin(environment.STRK20_MAINNET_PROVER_URL)
+      : proverProvider === "starkscan" &&
+          environment.STARKSCAN_API_KEY &&
+          environment.STARKSCAN_PROVER_URL
+        ? createStarkscanProverPlugin(
+            environment.STARKSCAN_PROVER_URL,
+            environment.STARKSCAN_API_KEY,
+          )
+        : undefined;
+  if (!mainnetProver) {
     addProxy(
       proxy,
       "/prover/mainnet",
-      environment.STRK20_MAINNET_PROVER_URL,
-      "STRK20_MAINNET_PROVER_URL",
+      undefined,
+      proverProvider === "starkware"
+        ? "STRK20_MAINNET_PROVER_URL"
+        : "STARKSCAN_PROVER_URL and STARKSCAN_API_KEY",
     );
   }
   addProxy(
@@ -106,7 +114,7 @@ export default defineConfig(({ mode }) => {
 
   return {
     envDir: environmentDirectory,
-    plugins: [react(), ...(starkscanProver ? [starkscanProver] : [])],
+    plugins: [react(), ...(mainnetProver ? [mainnetProver] : [])],
     server: { port: 4173, proxy },
     preview: { port: 4173 },
     test: {
@@ -131,6 +139,26 @@ function bridgeCompatibleStarknetRpcUrl(
 
 function createStarkscanProverPlugin(endpoint: string, apiKey: string): Plugin {
   const stateStore = createMemoryStarkscanProverStateStore();
+  return createMainnetProverPlugin("starkscan", (value) =>
+    relayStarkscanProverRequest(value, { endpoint, apiKey, stateStore }),
+  );
+}
+
+function createStarkwareProverPlugin(endpoint: string): Plugin {
+  const stateStore = createMemoryStarkscanProverStateStore();
+  return createMainnetProverPlugin("starkware", (value) =>
+    relayStarkwareProverRequest(value, { endpoint, stateStore }),
+  );
+}
+
+function createMainnetProverPlugin(
+  provider: "starkware" | "starkscan",
+  relay: (value: unknown) => Promise<{
+    readonly status: number;
+    readonly body: Record<string, unknown>;
+    readonly retryAfter?: string;
+  }>,
+): Plugin {
   const install = (middlewares: {
     use(
       handler: (
@@ -152,12 +180,10 @@ function createStarkscanProverPlugin(endpoint: string, apiKey: string): Plugin {
         return;
       }
       try {
-        const result = await relayStarkscanProverRequest(
-          await readJsonBody(request),
-          { endpoint, apiKey, stateStore },
-        );
+        const result = await relay(await readJsonBody(request));
         response.statusCode = result.status;
         response.setHeader("content-type", "application/json; charset=utf-8");
+        response.setHeader("x-privatepons-prover", provider);
         if (result.retryAfter) {
           response.setHeader("retry-after", result.retryAfter);
         }
@@ -178,10 +204,20 @@ function createStarkscanProverPlugin(endpoint: string, apiKey: string): Plugin {
     });
   };
   return {
-    name: "privatepons-starkscan-prover",
+    name: `privatepons-${provider}-prover`,
     configureServer: (server) => install(server.middlewares),
     configurePreviewServer: (server) => install(server.middlewares),
   };
+}
+
+function mainnetProverProvider(
+  value: string | undefined,
+): "starkware" | "starkscan" {
+  const provider = value?.trim().toLowerCase() || "starkware";
+  if (provider !== "starkware" && provider !== "starkscan") {
+    throw new Error("PROVER_PROVIDER must be starkware or starkscan");
+  }
+  return provider;
 }
 
 async function readJsonBody(

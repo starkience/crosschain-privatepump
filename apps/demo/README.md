@@ -41,11 +41,12 @@ pnpm --filter @private-launchpad/demo dev
 ```
 
 The Vite server proxies privacy services, AVNU, RPCs, Relay, and the policy relayer from the same
-origin. On mainnet, `/prover/mainnet` adapts the Privacy SDK's existing synchronous JSON-RPC call to
-Starkscan's asynchronous proving jobs. Set `STARKSCAN_PROVER_URL` and `STARKSCAN_API_KEY` only in
-the server environment; the key must never use `VITE_` or appear in browser code. Run
-`pnpm preflight:starkscan` to authenticate the key, verify its `prove` scope, and safely check that
-the mainnet route is enabled without creating a proof job.
+origin. On mainnet, `PROVER_PROVIDER=starkware` relays the Privacy SDK's synchronous JSON-RPC call
+to `STRK20_MAINNET_PROVER_URL`. Set `PROVER_PROVIDER=starkscan` only for the optional asynchronous
+fallback, which also requires `STARKSCAN_PROVER_URL` and `STARKSCAN_API_KEY` in the server
+environment. The key must never use `VITE_` or appear in browser code. Run
+`pnpm preflight:starkscan` before enabling that fallback to authenticate the key, verify its `prove`
+scope, and safely check the route without creating a proof job.
 
 The production proxy additionally requires an Upstash-compatible Redis REST store. It keeps a
 non-sensitive job cursor for safe idempotent retries and encrypts the complete one-time proof result

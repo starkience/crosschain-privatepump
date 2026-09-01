@@ -53,9 +53,10 @@ export interface StarkscanProverRelayResponse {
   readonly retryAfter?: string;
 }
 
-interface ProveRequest {
+export interface MainnetProveRequest {
   readonly jsonrpc: "2.0";
   readonly id: string | number | null;
+  readonly method: "starknet_proveTransaction";
   readonly params: {
     readonly block_id: unknown;
     readonly transaction: Record<string, unknown>;
@@ -71,7 +72,7 @@ export async function relayStarkscanProverRequest(
   value: unknown,
   options: StarkscanProverRelayOptions,
 ): Promise<StarkscanProverRelayResponse> {
-  const request = proveRequest(
+  const request = validateMainnetProveRequest(
     value,
     options.poolAddress ?? MAINNET_POOL_ADDRESS,
   );
@@ -210,7 +211,10 @@ function starkscanIdempotencyKeyFromDigest(
   return `privatepons-${digest}${attempt === 0 ? "" : `-r${attempt}`}`;
 }
 
-function proveRequest(value: unknown, poolAddress: string): ProveRequest {
+export function validateMainnetProveRequest(
+  value: unknown,
+  poolAddress = MAINNET_POOL_ADDRESS,
+): MainnetProveRequest {
   const request = record(value, "proving JSON-RPC request");
   if (
     request.jsonrpc !== "2.0" ||
@@ -240,7 +244,7 @@ function proveRequest(value: unknown, poolAddress: string): ProveRequest {
   explicitBlockId(params.block_id);
   const transaction = record(params.transaction, "proof transaction");
   if (transaction.type !== "INVOKE") {
-    throw new Error("Starkscan accepts only INVOKE proof transactions");
+    throw new Error("mainnet proving accepts only INVOKE proof transactions");
   }
   if (
     typeof transaction.sender_address !== "string" ||
@@ -251,6 +255,7 @@ function proveRequest(value: unknown, poolAddress: string): ProveRequest {
   return {
     jsonrpc: "2.0",
     id: request.id as string | number | null,
+    method: "starknet_proveTransaction",
     params: { block_id: params.block_id, transaction },
   };
 }
@@ -617,7 +622,7 @@ function explicitBlockId(value: unknown): void {
     /^0x[0-9a-fA-F]{1,64}$/.test(block.block_hash);
   if (!validNumber && !validHash) {
     throw new Error(
-      "Starkscan proving requires an explicit block number or hash",
+      "mainnet proving requires an explicit block number or hash",
     );
   }
 }

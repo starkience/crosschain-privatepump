@@ -5,6 +5,7 @@ import type {
   ServerResponse,
 } from "node:http";
 import { relayStarkscanProverRequest } from "../src/starkscan-prover-relay.js";
+import { relayStarkwareProverRequest } from "../src/starkware-prover-relay.js";
 import {
   createStarkscanProverStateStoreFromEnv,
   type StarkscanProverStateStore,
@@ -16,12 +17,12 @@ type ServiceKind =
   | "evm-rpc"
   | "starknet-rpc"
   | "privacy-service"
-  | "starkscan-prover"
+  | "mainnet-prover"
   | "avnu"
   | "relay";
 
 interface Service {
-  readonly environment: string;
+  readonly environment?: string;
   readonly kind: ServiceKind;
   readonly methods: readonly string[];
   readonly headerEnvironment?: string;
@@ -69,9 +70,7 @@ const SERVICES: Readonly<Record<string, Service>> = Object.freeze({
     methods: ["GET", "POST"],
   },
   "prover-mainnet": {
-    environment: "STARKSCAN_PROVER_URL",
-    headerEnvironment: "STARKSCAN_API_KEY",
-    kind: "starkscan-prover",
+    kind: "mainnet-prover",
     methods: ["POST"],
   },
   "indexer-mainnet": {
@@ -124,7 +123,7 @@ const AVNU_METHODS = new Set([
   "paymaster_isAvailable",
 ]);
 
-export const config = { maxDuration: 60 };
+export const config = { maxDuration: 300 };
 
 let proverStateStore: StarkscanProverStateStore | undefined;
 
@@ -150,27 +149,13 @@ export default async function handler(
     const body = await requestBody(request, method);
     validateRequest(service.kind, method, incoming, body);
 
-    const upstreamValue = process.env[service.environment];
+    if (service.kind === "mainnet-prover") {
+      return await relayMainnetProof(body, response);
+    }
+
+    const upstreamValue = process.env[service.environment!];
     if (!upstreamValue) {
       return json(response, 503, { error: "upstream is not configured" });
-    }
-    if (service.kind === "starkscan-prover") {
-      const credential = process.env[service.headerEnvironment!];
-      if (!credential) {
-        return json(response, 503, {
-          error: "upstream credential is not configured",
-        });
-      }
-      proverStateStore ??= createStarkscanProverStateStoreFromEnv(process.env);
-      const result = await relayStarkscanProverRequest(parseJson(body), {
-        endpoint: upstreamValue,
-        apiKey: credential,
-        stateStore: proverStateStore,
-      });
-      if (result.retryAfter) {
-        response.setHeader("retry-after", result.retryAfter);
-      }
-      return json(response, result.status, result.body);
     }
 
     const upstream = upstreamUrl(upstreamValue, incoming);
@@ -241,9 +226,9 @@ function validateRequest(
   if (kind === "privacy-service" && !path.startsWith("/v1/")) {
     if (path !== "/") throw new Error("privacy-service path is not allowed");
   }
-  if (kind === "starkscan-prover") {
+  if (kind === "mainnet-prover") {
     if (method !== "POST" || path !== "/") {
-      throw new Error("Starkscan prover path is not allowed");
+      throw new Error("mainnet prover path is not allowed");
     }
   }
   if (kind === "evm-rpc") {
@@ -328,12 +313,53 @@ function forwardHeaders(source: IncomingHttpHeaders): Headers {
 }
 
 function proxyErrorStatus(message: string): number {
-  if (/proof state|PROVER_STATE_/i.test(message)) return 503;
+  if (/proof state|PROVER_STATE_|PROVER_PROVIDER/i.test(message)) return 503;
   return /too large|invalid|required|not allowed|must|only|explicit|sender|unsupported/i.test(
     message,
   )
     ? 400
     : 502;
+}
+
+async function relayMainnetProof(
+  body: Buffer | undefined,
+  response: ServerResponse,
+): Promise<void> {
+  const provider = mainnetProverProvider(process.env.PROVER_PROVIDER);
+  response.setHeader("x-privatepons-prover", provider);
+  proverStateStore ??= createStarkscanProverStateStoreFromEnv(process.env);
+  const request = parseJson(body);
+  const result =
+    provider === "starkware"
+      ? await relayStarkwareProverRequest(request, {
+          endpoint: requiredEnvironment("STRK20_MAINNET_PROVER_URL"),
+          stateStore: proverStateStore,
+        })
+      : await relayStarkscanProverRequest(request, {
+          endpoint: requiredEnvironment("STARKSCAN_PROVER_URL"),
+          apiKey: requiredEnvironment("STARKSCAN_API_KEY"),
+          stateStore: proverStateStore,
+        });
+  if (result.retryAfter) {
+    response.setHeader("retry-after", result.retryAfter);
+  }
+  json(response, result.status, result.body);
+}
+
+function mainnetProverProvider(
+  value: string | undefined,
+): "starkware" | "starkscan" {
+  const provider = value?.trim().toLowerCase() || "starkware";
+  if (provider !== "starkware" && provider !== "starkscan") {
+    throw new Error("PROVER_PROVIDER must be starkware or starkscan");
+  }
+  return provider;
+}
+
+function requiredEnvironment(name: string): string {
+  const value = process.env[name]?.trim();
+  if (!value) throw new Error(`${name} is required`);
+  return value;
 }
 
 function json(

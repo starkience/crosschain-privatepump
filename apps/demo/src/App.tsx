@@ -671,6 +671,11 @@ function errorMessage(error: unknown): string {
       requestId ? ` Starkscan reference: ${requestId}.` : ""
     }`;
   }
+  if (
+    /StarkWare prover did not return before the request deadline/i.test(message)
+  ) {
+    return "The StarkWare prover did not return before the safe request deadline. Your public transfer is already complete and the USDC remains staged on Starknet. Do not deposit again; use Finish deposit to resume the private step.";
+  }
   const requestSuffix =
     error instanceof RelayerRejectedError && error.requestId
       ? ` Reference: ${error.requestId}.`

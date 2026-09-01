@@ -369,6 +369,33 @@ describe("Plank interface", () => {
     expect(runtime.deposit).not.toHaveBeenCalled();
   });
 
+  it("keeps a timed-out StarkWare proof resumable without another public transfer", async () => {
+    const runtime = fixture("live");
+    vi.mocked(runtime.readPendingDeposit).mockResolvedValue(25_000_000n);
+    vi.mocked(runtime.resumeDeposit).mockRejectedValue(
+      new Error(
+        'Proving service HTTP 504: {"error":"StarkWare prover did not return before the request deadline. Proof delivery is unknown; do not start another public deposit."}',
+      ),
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: /connect metamask/i }));
+    fireEvent.click(
+      await screen.findByRole("button", { name: /finish deposit/i }),
+    );
+
+    expect(
+      await screen.findAllByText(
+        /did not return before the safe request deadline/i,
+      ),
+    ).not.toHaveLength(0);
+    expect(screen.getAllByText(/do not deposit again/i)).not.toHaveLength(0);
+    expect(
+      screen.getByRole("button", { name: /finish deposit/i }),
+    ).toBeTruthy();
+    expect(runtime.resumeDeposit).toHaveBeenCalledOnce();
+    expect(runtime.deposit).not.toHaveBeenCalled();
+  });
+
   it("treats post-deposit fee dust as complete instead of offering another resume", async () => {
     const runtime = fixture("live");
     vi.mocked(runtime.readPrivateBalance)
