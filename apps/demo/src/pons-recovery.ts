@@ -17,6 +17,8 @@ import {
 import type { PrivatePosition } from "./positions.js";
 
 const PRIVATE_FACTORY_DEPLOYMENT_BLOCK = 48_000_000n;
+const MAX_LOG_BLOCK_RANGE = 50_000n;
+const MIN_LOG_BLOCK_RANGE = 500n;
 const ACCOUNT_CREATED_EVENT = parseAbiItem(
   "event AccountCreated(address indexed account, address indexed owner, uint256 indexed index)",
 );
@@ -94,12 +96,17 @@ export async function recoverPonsPositions({
   }
 
   const publicClient = client.config.publicClient;
-  const accountEvents = await publicClient.getLogs({
-    address: client.config.factory,
-    event: ACCOUNT_CREATED_EVENT,
+  const latestBlock = await publicClient.getBlockNumber();
+  const accountEvents = await getLogsInBlockRanges(
     fromBlock,
-    toBlock: "latest",
-  });
+    latestBlock,
+    (range) =>
+      publicClient.getLogs({
+        address: client.config.factory,
+        event: ACCOUNT_CREATED_EVENT,
+        ...range,
+      }),
+  );
 
   const accounts: AccountCandidate[] = [];
   for (const event of accountEvents) {
@@ -133,7 +140,9 @@ export async function recoverPonsPositions({
   }
 
   const recovered = await Promise.all(
-    accounts.map((account) => recoverAccountPositions(publicClient, account)),
+    accounts.map((account) =>
+      recoverAccountPositions(publicClient, account, latestBlock),
+    ),
   );
   return recovered
     .flat()
@@ -174,21 +183,24 @@ export async function readPonsTokenMetadata(
 async function recoverAccountPositions(
   publicClient: PublicClient,
   session: AccountCandidate,
+  latestBlock: bigint,
 ): Promise<PrivatePosition[]> {
   const [incomingTransfers, launches] = await Promise.all([
-    publicClient.getLogs({
-      event: TRANSFER_EVENT,
-      args: { to: session.account },
-      fromBlock: session.blockNumber,
-      toBlock: "latest",
-    }),
-    publicClient.getLogs({
-      address: PONS_V2_ROBINHOOD.factory,
-      event: TOKEN_LAUNCHED_EVENT,
-      args: { deployer: session.account },
-      fromBlock: session.blockNumber,
-      toBlock: "latest",
-    }),
+    getLogsInBlockRanges(session.blockNumber, latestBlock, (range) =>
+      publicClient.getLogs({
+        event: TRANSFER_EVENT,
+        args: { to: session.account },
+        ...range,
+      }),
+    ),
+    getLogsInBlockRanges(session.blockNumber, latestBlock, (range) =>
+      publicClient.getLogs({
+        address: PONS_V2_ROBINHOOD.factory,
+        event: TOKEN_LAUNCHED_EVENT,
+        args: { deployer: session.account },
+        ...range,
+      }),
+    ),
   ]);
 
   const launchByToken = new Map(
@@ -308,6 +320,55 @@ async function recoverAccountPositions(
 
   return positions.filter(
     (position): position is PrivatePosition => position !== undefined,
+  );
+}
+
+async function getLogsInBlockRanges<T>(
+  fromBlock: bigint,
+  toBlock: bigint,
+  query: (range: {
+    fromBlock: bigint;
+    toBlock: bigint;
+  }) => Promise<readonly T[]>,
+): Promise<T[]> {
+  if (toBlock < fromBlock) return [];
+
+  const logs: T[] = [];
+  let cursor = fromBlock;
+  let blockRange = MAX_LOG_BLOCK_RANGE;
+  while (cursor <= toBlock) {
+    const chunkEnd =
+      cursor + blockRange - 1n < toBlock ? cursor + blockRange - 1n : toBlock;
+    try {
+      logs.push(...(await query({ fromBlock: cursor, toBlock: chunkEnd })));
+      cursor = chunkEnd + 1n;
+      if (blockRange < MAX_LOG_BLOCK_RANGE) {
+        blockRange =
+          blockRange * 2n > MAX_LOG_BLOCK_RANGE
+            ? MAX_LOG_BLOCK_RANGE
+            : blockRange * 2n;
+      }
+    } catch (error) {
+      if (!isLogRangeTimeout(error)) throw error;
+      const attemptedRange = chunkEnd - cursor + 1n;
+      if (attemptedRange <= MIN_LOG_BLOCK_RANGE) {
+        throw new Error(
+          "Robinhood RPC timed out while scanning position history. Try recovery again shortly.",
+          { cause: error },
+        );
+      }
+      const reducedRange = attemptedRange / 2n;
+      blockRange =
+        reducedRange < MIN_LOG_BLOCK_RANGE ? MIN_LOG_BLOCK_RANGE : reducedRange;
+    }
+  }
+  return logs;
+}
+
+function isLogRangeTimeout(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error);
+  return /log query timed out|eth_getLogs.*tim(?:e|ed) out|query timeout/i.test(
+    message,
   );
 }
 

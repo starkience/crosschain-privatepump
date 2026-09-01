@@ -685,6 +685,9 @@ function errorMessage(error: unknown): string {
   if (/relay quote/i.test(message) && /amount too low/i.test(message)) {
     return "Relay cannot return this amount yet because it is too low to cover the swap fees and Arbitrum gas top-up. The USDG remains in the recorded fresh Robinhood account; retry when Relay fees are lower.";
   }
+  if (/eth_getLogs|log query timed out/i.test(message)) {
+    return "Robinhood RPC timed out while scanning position history. Existing saved positions remain available; try recovery again shortly.";
+  }
   if (isAmbiguousPaymasterSubmissionMessage(message)) {
     return "The paymaster reports that this transaction was already submitted or its nonce was used. It may already have completed, so PonsButPrivate is reconciling onchain state without repeating the public transfer.";
   }
@@ -2717,7 +2720,11 @@ export function App({ runtime }: AppProps) {
       position.sellTxHash ?? position.buyTxHash ?? position.launchTxHash,
     );
     setLastTrade(undefined);
-    setError(position.lastError);
+    setError(
+      position.lastError
+        ? errorMessage(new Error(position.lastError))
+        : undefined,
+    );
     setStage("idle");
     setWorkspace("trade");
   }
@@ -4338,7 +4345,10 @@ export function App({ runtime }: AppProps) {
                               className="portfolio-position-warning"
                               role="status"
                             >
-                              {snapshot?.error ?? position.lastError}
+                              {snapshot?.error ??
+                                (position.lastError
+                                  ? errorMessage(new Error(position.lastError))
+                                  : undefined)}
                             </p>
                           )}
 

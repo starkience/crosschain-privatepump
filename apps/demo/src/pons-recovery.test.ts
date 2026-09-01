@@ -59,6 +59,7 @@ describe("Pons onchain position recovery", () => {
     );
     const publicClient = {
       getLogs,
+      getBlockNumber: vi.fn(async () => 120n),
       readContract,
       getBlock: vi.fn(async () => ({ timestamp: 1_700_000_000n })),
       getTransactionReceipt: vi.fn(),
@@ -76,6 +77,7 @@ describe("Pons onchain position recovery", () => {
     const positions = await recoverPonsPositions({
       client,
       signature: "0x1234",
+      fromBlock: 90n,
     });
 
     expect(deriveEvmOwner).toHaveBeenCalledWith(
@@ -97,5 +99,35 @@ describe("Pons onchain position recovery", () => {
         createdAt: 1_700_000_000_000,
       }),
     ]);
+  });
+
+  it("retries timed-out log queries in bounded block ranges", async () => {
+    const getLogs = vi.fn(
+      async (request: { fromBlock: bigint; toBlock: bigint }) => {
+        if (request.toBlock - request.fromBlock + 1n > 10_000n) {
+          throw new Error("Details: log query timed out");
+        }
+        return [];
+      },
+    );
+    const publicClient = {
+      getLogs,
+      getBlockNumber: vi.fn(async () => 25_000n),
+    } as unknown as PublicClient;
+    const client = {
+      channel: "private-launchpad-v1",
+      config: {
+        factory: FACTORY,
+        publicClient,
+        bridge: { deriveEvmOwner: vi.fn() },
+      },
+    } as unknown as PrivateLaunchpadClient;
+
+    await expect(
+      recoverPonsPositions({ client, signature: "0x1234", fromBlock: 0n }),
+    ).resolves.toEqual([]);
+    expect(
+      getLogs.mock.calls.some(([request]) => request.toBlock <= 9_999n),
+    ).toBe(true);
   });
 });
