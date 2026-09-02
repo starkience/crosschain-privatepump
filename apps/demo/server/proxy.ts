@@ -12,6 +12,9 @@ import {
 } from "../src/starkscan-prover-store.js";
 
 const MAX_BODY_BYTES = 1024 * 1024;
+const UPSTREAM_READ_ATTEMPTS = 4;
+const UPSTREAM_RETRY_BASE_MS = 250;
+const RETRYABLE_UPSTREAM_STATUSES = new Set([429, 502, 503, 504]);
 
 type ServiceKind =
   | "evm-rpc"
@@ -170,13 +173,16 @@ export default async function handler(
       headers.set(service.header, credential);
     }
 
-    const result = await fetch(upstream, {
+    const { result, retries } = await fetchUpstream(
+      upstream,
       method,
       headers,
-      ...(body ? { body: Uint8Array.from(body) } : {}),
-      redirect: "manual",
-      signal: AbortSignal.timeout(55_000),
-    });
+      body,
+      service.kind === "evm-rpc" && isReadOnlyEvmRequest(body),
+    );
+    if (retries > 0) {
+      response.setHeader("x-privatepons-upstream-retries", retries);
+    }
 
     response.statusCode = result.status;
     const contentType = result.headers.get("content-type");
@@ -189,6 +195,53 @@ export default async function handler(
       error instanceof Error ? error.message : "proxy request failed";
     json(response, proxyErrorStatus(message), { error: message });
   }
+}
+
+async function fetchUpstream(
+  upstream: URL,
+  method: string,
+  headers: Headers,
+  body: Buffer | undefined,
+  retryable: boolean,
+): Promise<{ result: Response; retries: number }> {
+  for (let attempt = 0; attempt < UPSTREAM_READ_ATTEMPTS; attempt += 1) {
+    const result = await fetch(upstream, {
+      method,
+      headers,
+      ...(body ? { body: Uint8Array.from(body) } : {}),
+      redirect: "manual",
+      signal: AbortSignal.timeout(55_000),
+    });
+    if (
+      !retryable ||
+      !RETRYABLE_UPSTREAM_STATUSES.has(result.status) ||
+      attempt + 1 >= UPSTREAM_READ_ATTEMPTS
+    ) {
+      return { result, retries: attempt };
+    }
+
+    const retryAfter = Number(result.headers.get("retry-after"));
+    const delay =
+      Number.isFinite(retryAfter) && retryAfter > 0
+        ? Math.min(retryAfter * 1_000, 5_000)
+        : UPSTREAM_RETRY_BASE_MS * 2 ** attempt +
+          Math.floor(Math.random() * 150);
+    await result.arrayBuffer();
+    await new Promise((resolve) => setTimeout(resolve, delay));
+  }
+  throw new Error("upstream retry loop ended unexpectedly");
+}
+
+function isReadOnlyEvmRequest(body: Buffer | undefined): boolean {
+  const payload = parseJson(body);
+  const requests = Array.isArray(payload) ? payload : [payload];
+  return requests.every(
+    (entry) =>
+      !!entry &&
+      typeof entry === "object" &&
+      !Array.isArray(entry) &&
+      (entry as Record<string, unknown>).method !== "eth_sendRawTransaction",
+  );
 }
 
 function upstreamUrl(value: string, incoming: URL): URL {

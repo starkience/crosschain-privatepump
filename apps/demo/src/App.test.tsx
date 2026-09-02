@@ -1013,7 +1013,10 @@ describe("Plank interface", () => {
     expect(await screen.findByText(/24\.2 USDC returned/i)).toBeTruthy();
     expect(runtime.buy).toHaveBeenCalledOnce();
     expect(runtime.sell).toHaveBeenCalledOnce();
-    expect(runtime.readTokenBalance).toHaveBeenCalledOnce();
+    expect(runtime.readAccountTokenBalance).toHaveBeenCalledWith(
+      session.account,
+      "0x4B07b7D32d3d5e1A16F33189f10f8F2B608a4b07",
+    );
     expect(runtime.sell).toHaveBeenCalledWith(
       expect.objectContaining({ amountIn: 1_240_000n * 10n ** 18n }),
     );

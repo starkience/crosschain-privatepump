@@ -2386,8 +2386,8 @@ export function App({ runtime }: AppProps) {
         token: launched.token,
         launchTxHash: launched.transactionHash,
       });
-      const confirmation = await runtime.waitForTransaction(
-        launched.transactionHash,
+      const confirmation = await retryRobinhoodRpcRead(() =>
+        runtime.waitForTransaction(launched.transactionHash),
       );
       if (confirmation.status === "reverted") {
         const message =
@@ -2415,8 +2415,8 @@ export function App({ runtime }: AppProps) {
         status: "buying",
         buyTxHash: creatorBuy.transactionHash,
       });
-      const buyConfirmation = await runtime.waitForTransaction(
-        creatorBuy.transactionHash,
+      const buyConfirmation = await retryRobinhoodRpcRead(() =>
+        runtime.waitForTransaction(creatorBuy.transactionHash),
       );
       if (buyConfirmation.status === "reverted") {
         const message =
@@ -2493,7 +2493,9 @@ export function App({ runtime }: AppProps) {
           detail:
             "Checking that this token is still on a live Pons bonding curve before moving private funds.",
         });
-        await runtime.quoteBuy(prepared.session.account, tradeDraft);
+        await retryRobinhoodRpcRead(() =>
+          runtime.quoteBuy(prepared.session.account, tradeDraft),
+        );
         updateExecutionLog("execution", {
           status: "pending",
           detail:
@@ -2608,8 +2610,8 @@ export function App({ runtime }: AppProps) {
           transactionHash: bought.transactionHash,
           explorerUrl: `${ROBINHOOD_EXPLORER_URL}/tx/${bought.transactionHash}`,
         });
-        const confirmation = await runtime.waitForTransaction(
-          bought.transactionHash,
+        const confirmation = await retryRobinhoodRpcRead(() =>
+          runtime.waitForTransaction(bought.transactionHash),
         );
         if (confirmation.status === "reverted") {
           updateExecutionLog("confirmation", {
@@ -2645,8 +2647,12 @@ export function App({ runtime }: AppProps) {
         }
         rootAddress = connectedWallet;
         positionId = activePosition.id;
-        await prepareFreshIdentity(activePosition.accountIndex);
-        const fullBalance = await runtime.readTokenBalance(
+        const prepared = await prepareFreshIdentity(
+          activePosition.accountIndex,
+        );
+        const fullBalance = await readAccountTokenBalanceWithRetry(
+          runtime,
+          prepared.session.account,
           activePosition.token,
         );
         if (fullBalance <= 0n) {
@@ -2668,8 +2674,8 @@ export function App({ runtime }: AppProps) {
           status: "selling",
           sellTxHash: sold.transactionHash,
         });
-        const confirmation = await runtime.waitForTransaction(
-          sold.transactionHash,
+        const confirmation = await retryRobinhoodRpcRead(() =>
+          runtime.waitForTransaction(sold.transactionHash),
         );
         if (confirmation.status === "reverted") {
           patchPosition(rootAddress, positionId, { status: "held" });
@@ -2792,7 +2798,9 @@ export function App({ runtime }: AppProps) {
         amountIn: executableAmount,
         slippageBps: 100,
       };
-      await runtime.quoteBuy(prepared.session.account, retryDraft);
+      await retryRobinhoodRpcRead(() =>
+        runtime.quoteBuy(prepared.session.account, retryDraft),
+      );
       updateExecutionLog("execution", {
         status: "running",
         detail: `Verified ${formatUsdcPrecise(executableAmount)} USDG and a live Pons curve. Submitting to the policy relayer.`,
@@ -2816,8 +2824,8 @@ export function App({ runtime }: AppProps) {
         transactionHash: bought.transactionHash,
         explorerUrl: `${ROBINHOOD_EXPLORER_URL}/tx/${bought.transactionHash}`,
       });
-      const confirmation = await runtime.waitForTransaction(
-        bought.transactionHash,
+      const confirmation = await retryRobinhoodRpcRead(() =>
+        runtime.waitForTransaction(bought.transactionHash),
       );
       if (confirmation.status === "reverted") {
         updateExecutionLog("confirmation", {
@@ -2912,7 +2920,7 @@ export function App({ runtime }: AppProps) {
     if (position.token) setToken(position.token);
     setError(undefined);
     try {
-      await prepareFreshIdentity(position.accountIndex);
+      const prepared = await prepareFreshIdentity(position.accountIndex);
       const transactionHash =
         position.status === "selling"
           ? position.sellTxHash
@@ -2931,7 +2939,9 @@ export function App({ runtime }: AppProps) {
 
       setTransactionHash(transactionHash);
       setStage("executing");
-      const confirmation = await runtime.waitForTransaction(transactionHash);
+      const confirmation = await retryRobinhoodRpcRead(() =>
+        runtime.waitForTransaction(transactionHash),
+      );
       if (confirmation.status === "reverted") {
         patchPosition(connectedWallet, position.id, {
           status:
@@ -2956,7 +2966,11 @@ export function App({ runtime }: AppProps) {
         return;
       }
       if (position.status === "buying" && position.token) {
-        const balance = await runtime.readTokenBalance(position.token);
+        const balance = await readAccountTokenBalanceWithRetry(
+          runtime,
+          prepared.session.account,
+          position.token,
+        );
         if (balance > 0n) {
           patchPosition(connectedWallet, position.id, {
             status: "held",

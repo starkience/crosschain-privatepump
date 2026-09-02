@@ -7,6 +7,7 @@ const POOL =
   "0x040337b1af3c663e86e333bab5a4b28da8d4652a15a69beee2b677776ffe812a";
 
 afterEach(() => {
+  vi.restoreAllMocks();
   vi.unstubAllEnvs();
   vi.unstubAllGlobals();
 });
@@ -138,6 +139,47 @@ describe("production edge proxy", () => {
 
     expect(response.status()).toBe(400);
     expect(response.json()).toEqual({ error: "Relay path is not allowed" });
+  });
+
+  it("retries a rate-limited read-only Robinhood RPC request", async () => {
+    vi.stubEnv("ROBINHOOD_RPC_URL", "https://rpc.mainnet.chain.robinhood.com");
+    const fetchImpl = vi
+      .fn()
+      .mockResolvedValueOnce(
+        Response.json(
+          { jsonrpc: "2.0", id: 1, error: { code: 429, message: "busy" } },
+          { status: 429 },
+        ),
+      )
+      .mockResolvedValueOnce(
+        Response.json({ jsonrpc: "2.0", id: 1, result: "0x2a" }),
+      );
+    vi.stubGlobal("fetch", fetchImpl);
+    vi.spyOn(Math, "random").mockReturnValue(0);
+    const response = fakeResponse();
+
+    await handler(
+      {
+        url: "/api/proxy?service=robinhood",
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: {
+          jsonrpc: "2.0",
+          id: 1,
+          method: "eth_call",
+          params: [
+            { to: "0x1111111111111111111111111111111111111111" },
+            "latest",
+          ],
+        },
+      } as never,
+      response.value,
+    );
+
+    expect(response.status()).toBe(200);
+    expect(response.json()).toEqual({ jsonrpc: "2.0", id: 1, result: "0x2a" });
+    expect(response.header("x-privatepons-upstream-retries")).toBe("1");
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
   });
 });
 

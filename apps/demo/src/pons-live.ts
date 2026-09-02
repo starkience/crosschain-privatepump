@@ -29,6 +29,8 @@ import {
 import { createLiveRuntime, type LaunchpadRuntime } from "./runtime.js";
 
 const ROBINHOOD_CHAIN_HEX = `0x${ROBINHOOD_MAINNET_CHAIN_ID.toString(16)}`;
+const ROBINHOOD_READ_ATTEMPTS = 4;
+const ROBINHOOD_READ_RETRY_BASE_MS = 500;
 
 export async function createPrivatePonsLiveRuntime(
   environment: Readonly<Record<string, unknown>>,
@@ -86,23 +88,26 @@ export async function createPrivatePonsLiveRuntime(
       salt: draft.salt,
     }),
     openOptions: async () => ({
-      prefund: await client.config.publicClient.readContract({
-        address: PONS_V2_ROBINHOOD.factory,
-        abi: ponsV2FactoryAbi,
-        functionName: "launchFee",
-      }),
+      prefund: await retryRobinhoodRead(() =>
+        client.config.publicClient.readContract({
+          address: PONS_V2_ROBINHOOD.factory,
+          abi: ponsV2FactoryAbi,
+          functionName: "launchFee",
+        }),
+      ),
     }),
     resolveOpenTokenAfterExecution: async (
       transactionHash,
       _intent,
       session,
     ) => {
-      const receipt =
-        await client.config.publicClient.waitForTransactionReceipt({
+      const receipt = await retryRobinhoodRead(() =>
+        client.config.publicClient.waitForTransactionReceipt({
           hash: transactionHash,
           confirmations: 1,
           timeout: 120_000,
-        });
+        }),
+      );
       if (receipt.status !== "success") throw new Error("Pons launch reverted");
       const events = parseEventLogs({
         abi: ponsV2FactoryAbi,
@@ -123,12 +128,14 @@ export async function createPrivatePonsLiveRuntime(
     },
     trade: {
       async buildIntent(draft) {
-        const launch = await client.config.publicClient.readContract({
-          address: PONS_V2_ROBINHOOD.factory,
-          abi: ponsV2FactoryAbi,
-          functionName: "getLaunchedToken",
-          args: [getAddress(draft.token)],
-        });
+        const launch = await retryRobinhoodRead(() =>
+          client.config.publicClient.readContract({
+            address: PONS_V2_ROBINHOOD.factory,
+            abi: ponsV2FactoryAbi,
+            functionName: "getLaunchedToken",
+            args: [getAddress(draft.token)],
+          }),
+        );
         if (!launch.exists) throw new Error("Pons token is not registered");
         if (launch.phase === 1) {
           throw new Error(
@@ -160,46 +167,70 @@ export async function createPrivatePonsLiveRuntime(
         } as PonsV2BuyIntent | PonsV2SellIntent;
       },
       async quote(side, intent, session) {
-        if (side === "buy") {
-          const buy = intent as PonsV2BuyIntent;
-          const quote = await quotePonsV2Buy(
+        return retryRobinhoodRead(async () => {
+          if (side === "buy") {
+            const buy = intent as PonsV2BuyIntent;
+            const quote = await quotePonsV2Buy(
+              client.config.publicClient,
+              buy.curve,
+              buy.quoteIn,
+              session.account,
+            );
+            return {
+              amountIn: buy.quoteIn,
+              amountOut: quote.tokensOut,
+              minimumAmountOut: buyMinimumFromQuote(
+                quote,
+                buy.quoteIn,
+                buy.slippageBps,
+              ),
+              calls: await pons.buildOpenCalls(buy, {
+                account: session.account,
+                publicClient: client.config.publicClient,
+              }),
+            };
+          }
+          const sell = intent as PonsV2SellIntent;
+          const amountOut = await quotePonsV2Sell(
             client.config.publicClient,
-            buy.curve,
-            buy.quoteIn,
-            session.account,
+            sell.curve,
+            sell.tokensIn,
           );
           return {
-            amountIn: buy.quoteIn,
-            amountOut: quote.tokensOut,
-            minimumAmountOut: buyMinimumFromQuote(
-              quote,
-              buy.quoteIn,
-              buy.slippageBps,
-            ),
-            calls: await pons.buildOpenCalls(buy, {
+            amountIn: sell.tokensIn,
+            amountOut,
+            minimumAmountOut: applySlippage(amountOut, sell.slippageBps),
+            calls: await pons.buildCloseCalls(sell, {
               account: session.account,
               publicClient: client.config.publicClient,
             }),
           };
-        }
-        const sell = intent as PonsV2SellIntent;
-        const amountOut = await quotePonsV2Sell(
-          client.config.publicClient,
-          sell.curve,
-          sell.tokensIn,
-        );
-        return {
-          amountIn: sell.tokensIn,
-          amountOut,
-          minimumAmountOut: applySlippage(amountOut, sell.slippageBps),
-          calls: await pons.buildCloseCalls(sell, {
-            account: session.account,
-            publicClient: client.config.publicClient,
-          }),
-        };
+        });
       },
     },
   });
+}
+
+async function retryRobinhoodRead<T>(read: () => Promise<T>): Promise<T> {
+  let lastError: unknown;
+  for (let attempt = 0; attempt < ROBINHOOD_READ_ATTEMPTS; attempt += 1) {
+    try {
+      return await read();
+    } catch (error) {
+      lastError = error;
+      const message = error instanceof Error ? error.message : String(error);
+      if (
+        !/too many requests|\b429\b|rate[ -]?limit/i.test(message) ||
+        attempt + 1 >= ROBINHOOD_READ_ATTEMPTS
+      ) {
+        throw error;
+      }
+      await new Promise((resolve) =>
+        setTimeout(resolve, ROBINHOOD_READ_RETRY_BASE_MS * 2 ** attempt),
+      );
+    }
+  }
+  throw lastError;
 }
 
 export async function ensureRobinhoodMainnet(
