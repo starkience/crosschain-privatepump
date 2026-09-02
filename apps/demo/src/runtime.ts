@@ -84,6 +84,8 @@ export interface LaunchpadRuntime {
   readonly mode: "demo" | "live";
   readonly network: { name: string; chainId: number };
   connectWallet(): Promise<PrivateLaunchpadSession["account"]>;
+  /** Optional connector that bypasses an unresponsive injected extension. */
+  connectWalletFallback?(): Promise<PrivateLaunchpadSession["account"]>;
   prepareIdentity(accountIndex?: number): Promise<PreparedIdentity>;
   readPrivateBalance(): Promise<bigint>;
   readPendingDeposit(): Promise<bigint>;
@@ -149,6 +151,7 @@ export interface LiveRuntimeConfig<
   client: PrivateLaunchpadClient;
   adapter: LaunchpadAdapter<TOpenIntent, TCloseIntent>;
   connectWallet(): Promise<PrivateLaunchpadSession["account"]>;
+  connectWalletFallback?(): Promise<PrivateLaunchpadSession["account"]>;
   signIdentity(args: {
     address: PrivateLaunchpadSession["account"];
     message: string;
@@ -209,6 +212,7 @@ export function createLiveRuntime<
   let session: PrivateLaunchpadSession | undefined;
   let walletConnectionRequest:
     Promise<PrivateLaunchpadSession["account"]> | undefined;
+  let walletConnectionGeneration = 0;
   let identitySignatureRequest: Promise<string> | undefined;
   let identitySignatureRequestAddress:
     PrivateLaunchpadSession["account"] | undefined;
@@ -228,22 +232,32 @@ export function createLiveRuntime<
     return { connectedAddress, identitySignature, session };
   };
 
+  const adoptConnectedAddress = (
+    nextAddress: PrivateLaunchpadSession["account"],
+  ) => {
+    if (
+      connectedAddress &&
+      connectedAddress.toLowerCase() !== nextAddress.toLowerCase()
+    ) {
+      identitySignature = undefined;
+      session = undefined;
+    }
+    connectedAddress = nextAddress;
+    return connectedAddress;
+  };
+
   const connect = () => {
     if (connectedAddress) return Promise.resolve(connectedAddress);
 
     if (!walletConnectionRequest) {
+      const requestGeneration = walletConnectionGeneration;
       const rawRequest = Promise.resolve()
         .then(() => config.connectWallet())
         .then((nextAddress) => {
-          if (
-            connectedAddress &&
-            connectedAddress.toLowerCase() !== nextAddress.toLowerCase()
-          ) {
-            identitySignature = undefined;
-            session = undefined;
+          if (requestGeneration !== walletConnectionGeneration) {
+            return connectedAddress ?? nextAddress;
           }
-          connectedAddress = nextAddress;
-          return connectedAddress;
+          return adoptConnectedAddress(nextAddress);
         });
       walletConnectionRequest = rawRequest;
       rawRequest.then(
@@ -327,6 +341,21 @@ export function createLiveRuntime<
       chainId: config.adapter.chainId,
     },
     connectWallet: connect,
+    ...(config.connectWalletFallback
+      ? {
+          async connectWalletFallback() {
+            // Invalidate any injected-provider request that never settled. The
+            // browser has no cancellation API for it, but its late result must
+            // not replace the deliberately selected fallback provider.
+            walletConnectionGeneration += 1;
+            walletConnectionRequest = undefined;
+            identitySignatureRequest = undefined;
+            identitySignatureRequestAddress = undefined;
+            const nextAddress = await config.connectWalletFallback!();
+            return adoptConnectedAddress(nextAddress);
+          },
+        }
+      : {}),
     async prepareIdentity(preferredAccountIndex) {
       const accountIndex =
         preferredAccountIndex ??

@@ -1924,11 +1924,22 @@ export function App({ runtime }: AppProps) {
   }
 
   async function connectEvmWallet() {
+    return connectWithWallet(() => runtime.connectWallet());
+  }
+
+  async function connectMobileEvmWallet() {
+    if (!runtime.connectWalletFallback) return undefined;
+    return connectWithWallet(() => runtime.connectWalletFallback!());
+  }
+
+  async function connectWithWallet(
+    connectWallet: () => Promise<PrivateLaunchpadSession["account"]>,
+  ) {
     if (walletConnecting) return undefined;
     setWalletConnecting(true);
     setWalletError(undefined);
     try {
-      await runtime.connectWallet();
+      await connectWallet();
       setWalletSigning(true);
       const prepared = await runtime.prepareIdentity(0);
       rememberStorageScope(prepared);
@@ -3258,7 +3269,18 @@ export function App({ runtime }: AppProps) {
       {walletError && (
         <div className="wallet-error-strip" role="alert">
           <span>{walletError}</span>
+          {runtime.connectWalletFallback && (
+            <button
+              className="wallet-error-fallback"
+              type="button"
+              disabled={walletConnecting || busy}
+              onClick={connectMobileEvmWallet}
+            >
+              Use MetaMask mobile
+            </button>
+          )}
           <button
+            className="wallet-error-dismiss"
             type="button"
             aria-label="Dismiss wallet error"
             onClick={() => setWalletError(undefined)}

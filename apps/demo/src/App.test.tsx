@@ -138,6 +138,27 @@ function fixture(
 }
 
 describe("Plank interface", () => {
+  it("offers MetaMask mobile when the injected extension does not respond", async () => {
+    const connectWalletFallback = vi.fn(
+      async () =>
+        "0x1111111111111111111111111111111111111111" as PrivateLaunchpadSession["account"],
+    );
+    fixture("live", "explore", {
+      connectWallet: vi.fn(async () => {
+        throw new Error("MetaMask did not respond");
+      }),
+      connectWalletFallback,
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: /connect metamask/i }));
+    const fallback = await screen.findByRole("button", {
+      name: /use metamask mobile/i,
+    });
+    fireEvent.click(fallback);
+
+    await waitFor(() => expect(connectWalletFallback).toHaveBeenCalledOnce());
+  });
+
   it("keeps primary actions available in the mobile navigation dock", () => {
     fixture("demo", "explore");
 

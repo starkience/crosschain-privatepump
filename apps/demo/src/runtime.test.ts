@@ -306,6 +306,44 @@ describe("live frontend runtime", () => {
     }
   });
 
+  it("lets a fallback connector replace a stale injected request", async () => {
+    const mobileAddress =
+      "0x4444444444444444444444444444444444444444" as PrivateLaunchpadSession["account"];
+    let resolveInjected!: (value: typeof address) => void;
+    const injectedRequest = new Promise<typeof address>((resolve) => {
+      resolveInjected = resolve;
+    });
+    const signIdentity = vi.fn(async () => "wallet-signature");
+    const runtime = createLiveRuntime({
+      appId: "launch.example",
+      accountIndex: 3,
+      client: {
+        deriveSession: vi.fn(async () => session),
+      } as unknown as PrivateLaunchpadClient,
+      adapter: { id: "host", chainId: 84532 } as LaunchpadAdapter<
+        LaunchDraft,
+        never
+      >,
+      connectWallet: vi.fn(() => injectedRequest),
+      connectWalletFallback: vi.fn(async () => mobileAddress),
+      signIdentity,
+      buildOpenIntent: (intent) => intent,
+    });
+
+    const staleInjected = runtime.connectWallet();
+    await Promise.resolve();
+    await expect(runtime.connectWalletFallback?.()).resolves.toBe(
+      mobileAddress,
+    );
+    resolveInjected(address);
+    await expect(staleInjected).resolves.toBe(mobileAddress);
+    await runtime.prepareIdentity();
+    expect(signIdentity).toHaveBeenCalledWith({
+      address: mobileAddress,
+      message: expect.any(String),
+    });
+  });
+
   it("does not stack identity signature requests after a timeout", async () => {
     vi.useFakeTimers();
     try {

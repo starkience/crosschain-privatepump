@@ -28,7 +28,8 @@ import {
 } from "./pons-recovery.js";
 import { createLiveRuntime, type LaunchpadRuntime } from "./runtime.js";
 
-const ROBINHOOD_CHAIN_HEX = `0x${ROBINHOOD_MAINNET_CHAIN_ID.toString(16)}`;
+const ROBINHOOD_CHAIN_HEX =
+  `0x${ROBINHOOD_MAINNET_CHAIN_ID.toString(16)}` as `0x${string}`;
 const ROBINHOOD_READ_ATTEMPTS = 4;
 const ROBINHOOD_READ_RETRY_BASE_MS = 500;
 
@@ -43,6 +44,11 @@ interface AnnouncedWalletProvider {
   readonly info: { readonly rdns: string };
   readonly provider: BrowserInjectedProvider;
 }
+
+type MetaMaskConnectModule = typeof import("@metamask/connect-evm");
+type MetaMaskConnectClient = Awaited<
+  ReturnType<MetaMaskConnectModule["createEVMClient"]>
+>;
 
 const announcedWalletProviders = new Map<string, BrowserInjectedProvider>();
 let walletProviderDiscoveryRequested = false;
@@ -61,6 +67,38 @@ export async function createPrivatePonsLiveRuntime(
 ): Promise<LaunchpadRuntime> {
   const client = await createPonsMainnetLiveClient(environment);
   const pons = ponsV2Adapter();
+  let activeWalletProvider: Eip1193Provider | undefined;
+  let walletProviderSelection = 0;
+  let mobileMetaMaskClient: Promise<MetaMaskConnectClient> | undefined;
+
+  const selectInjectedMetaMask = async () => {
+    const selection = ++walletProviderSelection;
+    const provider = injectedProvider();
+    const address = await connectMetaMask(provider);
+    if (selection === walletProviderSelection) activeWalletProvider = provider;
+    return address;
+  };
+
+  const selectMobileMetaMask = async () => {
+    const selection = ++walletProviderSelection;
+    mobileMetaMaskClient ??= createMobileMetaMaskClient();
+    const mobileClient = await mobileMetaMaskClient;
+    const result = await mobileClient.connect({
+      chainIds: [ROBINHOOD_CHAIN_HEX],
+      forceRequest: true,
+    });
+    const provider = mobileClient.getProvider() as Eip1193Provider;
+    const account = result.accounts[0];
+    if (!account || !isAddress(account)) {
+      throw new Error("MetaMask mobile did not return an EVM account");
+    }
+    await ensureRobinhoodMainnet(provider);
+    if (selection === walletProviderSelection) activeWalletProvider = provider;
+    return getAddress(account);
+  };
+
+  const selectedWalletProvider = () =>
+    activeWalletProvider ?? injectedProvider();
   const launchAdapter: LaunchpadAdapter<PonsV2LaunchIntent, never> = {
     id: "pons-v2-launch",
     chainId: ROBINHOOD_MAINNET_CHAIN_ID,
@@ -81,24 +119,15 @@ export async function createPrivatePonsLiveRuntime(
     fastFunding: true,
     client,
     adapter: launchAdapter,
-    connectWallet: async () => {
-      const provider = injectedProvider();
-      await ensureRobinhoodMainnet(provider);
-      const accounts = await provider.request({
-        method: "eth_requestAccounts",
-      });
-      if (!Array.isArray(accounts) || !isAddress(accounts[0])) {
-        throw new Error("wallet did not return an EVM account");
-      }
-      return getAddress(accounts[0]);
-    },
+    connectWallet: selectInjectedMetaMask,
+    connectWalletFallback: selectMobileMetaMask,
     signIdentity: async ({ address, message }) => {
       const wallet = createWalletClient({
-        transport: custom(injectedProvider()),
+        transport: custom(selectedWalletProvider()),
       });
       return wallet.signMessage({ account: address, message });
     },
-    depositProvider: () => injectedProvider(),
+    depositProvider: selectedWalletProvider,
     readMarketMetadata: (token) =>
       readPonsTokenMetadata(client.config.publicClient, token),
     recoverPositions: ({ signature, signal }) =>
@@ -237,6 +266,48 @@ export async function createPrivatePonsLiveRuntime(
       },
     },
   });
+}
+
+async function createMobileMetaMaskClient(): Promise<MetaMaskConnectClient> {
+  const { createEVMClient } = await import("@metamask/connect-evm");
+  return createEVMClient({
+    dapp: {
+      name: "PonsButPrivate",
+      url: window.location.origin,
+      iconUrl: new URL("/favicon.svg", window.location.origin).href,
+    },
+    api: {
+      supportedNetworks: {
+        [ROBINHOOD_CHAIN_HEX]: new URL("/robinhood-rpc", window.location.origin)
+          .href,
+      },
+    },
+    analytics: { enabled: false },
+    ui: {
+      // This connector is intentionally the escape hatch for a broken browser
+      // extension stream, so it must display the mobile QR even when MetaMask
+      // is installed in this browser.
+      preferExtension: false,
+    },
+    skipAutoAnnounce: true,
+  });
+}
+
+export async function connectMetaMask(
+  provider: Eip1193Provider,
+): Promise<Address> {
+  // Request the account first because this is the call MetaMask uses to open
+  // its approval UI. A preliminary eth_chainId request can hang forever when
+  // the extension's background stream is stale, leaving the user with no
+  // visible wallet prompt at all.
+  const accounts = await provider.request({
+    method: "eth_requestAccounts",
+  });
+  if (!Array.isArray(accounts) || !isAddress(accounts[0])) {
+    throw new Error("wallet did not return an EVM account");
+  }
+  await ensureRobinhoodMainnet(provider);
+  return getAddress(accounts[0]);
 }
 
 async function retryRobinhoodRead<T>(read: () => Promise<T>): Promise<T> {

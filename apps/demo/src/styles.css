@@ -279,7 +279,7 @@ a {
   font-size: 9px;
 }
 
-.wallet-error-strip button {
+.wallet-error-strip .wallet-error-dismiss {
   display: grid;
   place-items: center;
   width: 20px;
@@ -289,6 +289,23 @@ a {
   background: transparent;
   color: currentColor;
   cursor: pointer;
+}
+
+.wallet-error-strip .wallet-error-fallback {
+  min-height: 24px;
+  padding: 4px 9px;
+  border: 1px solid color-mix(in srgb, var(--red) 55%, var(--border));
+  border-radius: 999px;
+  background: var(--surface);
+  color: currentColor;
+  font: inherit;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.wallet-error-strip .wallet-error-fallback:disabled {
+  cursor: wait;
+  opacity: 0.6;
 }
 
 .network-status i,
@@ -4609,9 +4626,14 @@ a {
     font-size: 11px;
   }
 
-  .wallet-error-strip button {
+  .wallet-error-strip .wallet-error-dismiss {
     width: 36px;
     height: 36px;
+  }
+
+  .wallet-error-strip .wallet-error-fallback {
+    min-height: 36px;
+    padding-inline: 12px;
   }
 }
 
