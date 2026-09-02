@@ -35,6 +35,8 @@ const DEFAULT_PRIVATE_TRANSFER_FEE_BUFFER = 500_000n;
 
 export interface RelayBridgeQuote {
   requestId: string;
+  /** Short-lived policy binding added by the trusted same-origin proxy. */
+  quoteAttestation?: string;
   inputAmount: bigint;
   outputAmount: bigint;
   minimumOutputAmount: bigint;
@@ -378,7 +380,10 @@ export function createRelayReturnTransport(
           data: quote.depositTransaction.data,
         },
       ],
-      { relayRequestId: quote.requestId },
+      {
+        relayRequestId: quote.requestId,
+        relayQuoteAttestation: requiredQuoteAttestation(quote),
+      },
     );
     const confirmation = await args.waitForExecution(sourceTx);
     if (confirmation.status !== "success") {
@@ -807,8 +812,14 @@ function validateRelayQuote(
   if (transfer.amount !== inputAmount) {
     throw new Error("Relay deposit calldata changed the quoted input amount");
   }
+  const quoteAttestation =
+    typeof root.privatePonsAttestation === "string" &&
+    /^v1\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/.test(root.privatePonsAttestation)
+      ? root.privatePonsAttestation
+      : undefined;
   return {
     requestId,
+    ...(quoteAttestation ? { quoteAttestation } : {}),
     inputAmount,
     outputAmount,
     minimumOutputAmount,
@@ -832,6 +843,15 @@ function validateRelayQuote(
       ? { timeEstimateSeconds: Number(details.timeEstimate) }
       : {}),
   };
+}
+
+function requiredQuoteAttestation(quote: RelayBridgeQuote): string {
+  if (!quote.quoteAttestation) {
+    throw new Error(
+      "Relay return quote is missing its policy attestation; refresh and retry before moving funds",
+    );
+  }
+  return quote.quoteAttestation;
 }
 
 async function readUsdcBalance(

@@ -2,9 +2,17 @@ import { Buffer } from "node:buffer";
 import type { ServerResponse } from "node:http";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import handler from "./proxy.js";
+import { verifyRelayQuoteAttestation } from "../../../packages/relayer/src/relay-quote-attestation.js";
 
 const POOL =
   "0x040337b1af3c663e86e333bab5a4b28da8d4652a15a69beee2b677776ffe812a";
+const ACCOUNT = "0x1111111111111111111111111111111111111111";
+const OWNER = "0x2222222222222222222222222222222222222222";
+const RECIPIENT = "0x3333333333333333333333333333333333333333";
+const DEPOSIT = "0x4444444444444444444444444444444444444444";
+const USDG = "0x5fc5360D0400a0Fd4f2af552ADD042D716F1d168";
+const USDC = "0xaf88d065e77c8cC2239327C5EDb3A432268e5831";
+const ATTESTATION_KEY = "11".repeat(32);
 
 afterEach(() => {
   vi.restoreAllMocks();
@@ -139,6 +147,86 @@ describe("production edge proxy", () => {
 
     expect(response.status()).toBe(400);
     expect(response.json()).toEqual({ error: "Relay path is not allowed" });
+  });
+
+  it("seals an exact Robinhood return quote for policy verification", async () => {
+    vi.stubEnv("RELAY_API_URL", "https://api.relay.link");
+    vi.stubEnv("RELAY_API_KEY", "server-secret");
+    vi.stubEnv("RELAY_QUOTE_ATTESTATION_KEY", ATTESTATION_KEY);
+    const amount = "1764547";
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () =>
+        Response.json({
+          requestId: `0x${"ab".repeat(32)}`,
+          details: {
+            currencyIn: {
+              currency: { chainId: 4663, address: USDG },
+              amount,
+            },
+            currencyOut: {
+              currency: { chainId: 42161, address: USDC },
+              amount: "1160000",
+              minimumAmount: "1150000",
+            },
+          },
+          steps: [
+            {
+              id: "deposit",
+              items: [
+                {
+                  data: {
+                    chainId: 4663,
+                    from: ACCOUNT,
+                    to: USDG,
+                    value: "0",
+                    data: `0xa9059cbb${DEPOSIT.slice(2).padStart(64, "0")}${BigInt(amount).toString(16).padStart(64, "0")}`,
+                  },
+                },
+              ],
+            },
+          ],
+        }),
+      ),
+    );
+    const response = fakeResponse();
+
+    await handler(
+      {
+        url: "/api/proxy?service=relay&path=quote/v2",
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: {
+          user: ACCOUNT,
+          originChainId: 4663,
+          destinationChainId: 42161,
+          originCurrency: USDG,
+          destinationCurrency: USDC,
+          amount,
+          recipient: RECIPIENT,
+          refundTo: OWNER,
+          tradeType: "EXACT_INPUT",
+          useDepositAddress: true,
+          strict: true,
+        },
+      } as never,
+      response.value,
+    );
+
+    expect(response.status()).toBe(200);
+    const quote = response.json() as Record<string, unknown>;
+    const attestation = String(quote.privatePonsAttestation);
+    expect(attestation).toMatch(/^v1\./);
+    expect(
+      verifyRelayQuoteAttestation(ATTESTATION_KEY, attestation),
+    ).toMatchObject({
+      requestId: `0x${"ab".repeat(32)}`,
+      account: ACCOUNT,
+      owner: OWNER,
+      recipient: RECIPIENT,
+      depositAddress: DEPOSIT,
+      amount,
+    });
   });
 
   it("retries a rate-limited read-only Robinhood RPC request", async () => {

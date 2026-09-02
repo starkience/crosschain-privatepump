@@ -36,9 +36,9 @@ returning calls to the browser.
 The HTTP surface is `POST /v1/relay`, `POST /v1/clanker/quote`, and `GET /healthz`. Add rate limiting
 and access control at the deployment edge. Keep `UNISWAP_API_KEY` server-side.
 
-The Robinhood `PONS_V2_POLICY=true` profile also requires `RELAY_API_KEY` and an HTTPS
-`RELAY_API_URL`. A sell-return batch must carry the 32-byte Relay request ID. Before simulation or
-broadcast, the relayer resolves that request through Relay's authenticated Requests API and checks
-the R2 user, refund owner, strict deposit address, input/output chain and currency, exact input
-amount, executable status, and maximum quote age. Configure the latter with
-`RELAY_RETURN_MAX_QUOTE_AGE_SECONDS` (default `900`).
+The Robinhood `PONS_V2_POLICY=true` profile also requires a 32-byte
+`RELAY_QUOTE_ATTESTATION_KEY`, shared only with the same-origin Relay quote proxy. A sell-return
+batch must carry the 32-byte Relay request ID and the proxy's short-lived attestation. Before
+simulation or broadcast, the relayer verifies that the account, refund owner, isolated recipient,
+strict deposit address, exact input amount, and request ID match the quote that the trusted proxy
+received directly from Relay. The MAC key must never be exposed through a `VITE_` variable.

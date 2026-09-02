@@ -296,6 +296,9 @@ export class PrivateLaunchpadClient {
             ...(context?.relayRequestId
               ? { relayRequestId: context.relayRequestId }
               : {}),
+            ...(context?.relayQuoteAttestation
+              ? { relayQuoteAttestation: context.relayQuoteAttestation }
+              : {}),
           }),
         waitForExecution: (transactionHash) =>
           this.waitForExecution(transactionHash),
@@ -422,6 +425,9 @@ export class PrivateLaunchpadClient {
       signature: relaySignature,
       ...(options.relayRequestId
         ? { relayRequestId: options.relayRequestId }
+        : {}),
+      ...(options.relayQuoteAttestation
+        ? { relayQuoteAttestation: options.relayQuoteAttestation }
         : {}),
     };
   }

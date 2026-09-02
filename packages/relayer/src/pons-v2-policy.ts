@@ -90,11 +90,15 @@ async function validatePrivateReturnTransfer(
   if (!request.relayRequestId) {
     throw new Error("Pons private return requires a Relay request ID");
   }
+  if (!request.relayQuoteAttestation) {
+    throw new Error("Pons private return requires a Relay quote attestation");
+  }
   if (!relayReturnVerifier) {
     throw new Error("Pons private return verification is not configured");
   }
   await relayReturnVerifier({
     requestId: request.relayRequestId,
+    quoteAttestation: request.relayQuoteAttestation,
     account: request.account,
     owner: request.owner,
     depositAddress: recipient,

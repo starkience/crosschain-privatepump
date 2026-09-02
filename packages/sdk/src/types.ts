@@ -33,6 +33,8 @@ export interface RelayExecutionRequest {
   signature: Hex;
   /** Relay quote whose strict deposit action this batch executes. */
   relayRequestId?: string;
+  /** Server-signed binding for the exact strict Relay return quote. */
+  relayQuoteAttestation?: string;
 }
 
 export type RelayExecution = (request: RelayExecutionRequest) => Promise<Hash>;
@@ -67,6 +69,8 @@ export interface ExecuteOptions {
   deadlineSeconds?: number;
   /** Included for policy validation; calls remain owner-bound by EIP-712. */
   relayRequestId?: string;
+  /** Included for policy validation of a strict Relay return quote. */
+  relayQuoteAttestation?: string;
 }
 
 export interface PrivateLaunchpadClientConfig {
@@ -199,7 +203,10 @@ export interface SessionReturnTransportArgs {
   amount: bigint;
   submitCalls(
     calls: readonly ExecutionCall[],
-    context?: { relayRequestId?: string },
+    context?: {
+      relayRequestId?: string;
+      relayQuoteAttestation?: string;
+    },
   ): Promise<Hash>;
   waitForExecution(transactionHash: Hash): Promise<ExecutionConfirmation>;
   onStep?: BridgeStepCallback;

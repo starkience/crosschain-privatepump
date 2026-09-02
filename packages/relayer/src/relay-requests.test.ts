@@ -1,9 +1,8 @@
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it } from "vitest";
 import type { Address } from "viem";
-import { ARBITRUM_NATIVE_USDC, ROBINHOOD_USDG } from "@private-launchpad/sdk";
+import { createRelayQuoteAttestation } from "./relay-quote-attestation.js";
 import {
   createRelayReturnVerifier,
-  validateRelayReturnRequest,
   type RelayReturnBinding,
 } from "./relay-requests.js";
 
@@ -12,106 +11,91 @@ const ACCOUNT = "0x1111111111111111111111111111111111111111" as Address;
 const OWNER = "0x2222222222222222222222222222222222222222" as Address;
 const DEPOSIT = "0x3333333333333333333333333333333333333333" as Address;
 const RECIPIENT = "0x4444444444444444444444444444444444444444" as Address;
+const KEY = "11".repeat(32);
 const NOW = Date.parse("2026-08-31T10:00:00.000Z");
 
-const binding: RelayReturnBinding = {
-  requestId: REQUEST_ID,
-  account: ACCOUNT,
-  owner: OWNER,
-  depositAddress: DEPOSIT,
-  amount: 25_000_000n,
-};
+function attestation(overrides: Partial<RelayReturnBinding> = {}): string {
+  return createRelayQuoteAttestation(KEY, {
+    requestId: overrides.requestId ?? REQUEST_ID,
+    account: overrides.account ?? ACCOUNT,
+    owner: overrides.owner ?? OWNER,
+    recipient: RECIPIENT,
+    depositAddress: overrides.depositAddress ?? DEPOSIT,
+    amount: overrides.amount ?? 25_000_000n,
+    issuedAt: NOW - 60_000,
+    expiresAt: NOW + 60_000,
+  });
+}
 
-function response() {
+function binding(
+  overrides: Partial<RelayReturnBinding> = {},
+): RelayReturnBinding {
   return {
-    requests: [
-      {
-        id: REQUEST_ID,
-        status: "waiting",
-        user: ACCOUNT,
-        recipient: RECIPIENT,
-        refundTo: OWNER,
-        depositAddress: { address: DEPOSIT, type: "strict" },
-        data: {
-          route: {
-            quoted: {
-              origin: {
-                inputCurrency: {
-                  currency: {
-                    chainId: 4663,
-                    address: ROBINHOOD_USDG,
-                  },
-                  amount: "25000000",
-                },
-              },
-              destination: {
-                outputCurrency: {
-                  currency: {
-                    chainId: 42161,
-                    address: ARBITRUM_NATIVE_USDC,
-                  },
-                  amount: "24600000",
-                  minimumAmount: "24300000",
-                },
-              },
-            },
-          },
-        },
-        createdAt: "2026-08-31T09:55:00.000Z",
-      },
-    ],
+    requestId: REQUEST_ID,
+    quoteAttestation: attestation(),
+    account: ACCOUNT,
+    owner: OWNER,
+    depositAddress: DEPOSIT,
+    amount: 25_000_000n,
+    ...overrides,
   };
 }
 
 describe("Relay return request verification", () => {
-  it("uses the authenticated request lookup and accepts an exact strict quote", async () => {
-    const fetchImpl = vi.fn(async () => Response.json(response()));
+  it("accepts the exact short-lived quote sealed by the trusted proxy", async () => {
     const verify = createRelayReturnVerifier({
-      apiKey: "server-key",
-      fetch: fetchImpl,
+      attestationKey: KEY,
       now: () => NOW,
     });
-
-    await expect(verify(binding)).resolves.toBeUndefined();
-    const [url, init] = fetchImpl.mock.calls[0]!;
-    expect(String(url)).toContain(`/requests/v3?id=${REQUEST_ID}`);
-    expect(init?.headers).toMatchObject({ "x-api-key": "server-key" });
+    await expect(verify(binding())).resolves.toBeUndefined();
   });
 
-  it("rejects a quote for a different deposit address or amount", () => {
-    expect(() =>
-      validateRelayReturnRequest(
-        response(),
-        {
-          ...binding,
-          depositAddress:
-            "0x5555555555555555555555555555555555555555" as Address,
-        },
-        NOW,
+  it("rejects changes to the request, account, deposit address, or amount", async () => {
+    const verify = createRelayReturnVerifier({
+      attestationKey: KEY,
+      now: () => NOW,
+    });
+    await expect(
+      verify(binding({ requestId: `0x${"cd".repeat(32)}` })),
+    ).rejects.toThrow(/request ID/);
+    await expect(
+      verify(
+        binding({
+          account: "0x5555555555555555555555555555555555555555",
+        }),
       ),
-    ).toThrow(/strict deposit address/);
-    expect(() =>
-      validateRelayReturnRequest(response(), { ...binding, amount: 1n }, NOW),
-    ).toThrow(/amount does not match/);
+    ).rejects.toThrow(/user/);
+    await expect(
+      verify(
+        binding({
+          depositAddress: "0x5555555555555555555555555555555555555555",
+        }),
+      ),
+    ).rejects.toThrow(/strict deposit address/);
+    await expect(verify(binding({ amount: 1n }))).rejects.toThrow(/amount/);
   });
 
-  it("rejects stale, non-strict, or already completed requests", () => {
-    const stale = response();
-    stale.requests[0]!.createdAt = "2026-08-31T09:00:00.000Z";
-    expect(() => validateRelayReturnRequest(stale, binding, NOW)).toThrow(
-      /age window/,
-    );
-
-    const flexible = response();
-    flexible.requests[0]!.depositAddress.type = "open";
-    expect(() => validateRelayReturnRequest(flexible, binding, NOW)).toThrow(
-      /strict deposit address/,
-    );
-
-    const completed = response();
-    completed.requests[0]!.status = "success";
-    expect(() => validateRelayReturnRequest(completed, binding, NOW)).toThrow(
-      /not executable/,
-    );
+  it("rejects tampered or expired attestations", async () => {
+    const verify = createRelayReturnVerifier({
+      attestationKey: KEY,
+      now: () => NOW,
+    });
+    const valid = attestation();
+    await expect(
+      verify(binding({ quoteAttestation: `${valid.slice(0, -1)}A` })),
+    ).rejects.toThrow(/authentication/);
+    const expired = createRelayQuoteAttestation(KEY, {
+      requestId: REQUEST_ID,
+      account: ACCOUNT,
+      owner: OWNER,
+      recipient: RECIPIENT,
+      depositAddress: DEPOSIT,
+      amount: 25_000_000n,
+      issuedAt: NOW - 120_000,
+      expiresAt: NOW - 60_000,
+    });
+    await expect(
+      verify(binding({ quoteAttestation: expired })),
+    ).rejects.toThrow(/expired/);
   });
 });

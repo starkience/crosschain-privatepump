@@ -116,11 +116,11 @@ graduation. `Swept` and `Rescued` fail closed until explicit recovery behavior e
 7. S2 privately transfers the resulting note inside STRK20 to the main S1 identity.
 
 The client validates the quote's chain, token, sender, amount, and exact ERC-20 transfer calldata.
-It includes the Relay request ID as policy metadata beside the owner-signed batch. Before broadcast,
-the relayer resolves that ID through Relay's authenticated Requests API and independently binds the
-R2 user, refund owner, strict deposit address, Robinhood USDG input, exact amount, Arbitrum USDC
-output, executable status, and maximum quote age. This avoids a process-local cache that would be
-unsafe across serverless instances.
+The same-origin proxy adds a short-lived server MAC over the request ID, R2 user, refund owner,
+isolated recipient, strict deposit address, and exact amount. The client carries that attestation
+beside the owner-signed batch, and the relayer verifies it before broadcast. This avoids both the
+circular pre-broadcast `/requests` lookup and a process-local cache that would be unsafe across
+serverless instances.
 
 ## Operation state machine
 

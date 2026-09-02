@@ -241,12 +241,17 @@ describe("Pons V2 relayer semantic policy", () => {
     } as const;
     await expect(
       validateReturn(
-        { ...request([call]), relayRequestId: RELAY_REQUEST_ID },
+        {
+          ...request([call]),
+          relayRequestId: RELAY_REQUEST_ID,
+          relayQuoteAttestation: "v1.payload.signature",
+        },
         client(),
       ),
     ).resolves.toBeUndefined();
     expect(verifyRelayReturn).toHaveBeenCalledWith({
       requestId: RELAY_REQUEST_ID,
+      quoteAttestation: "v1.payload.signature",
       account: ACCOUNT,
       owner: OWNER,
       depositAddress: CURVE,

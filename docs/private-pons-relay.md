@@ -68,7 +68,8 @@ correlate distinctive amounts and timing.
 
 ## Mainnet gates
 
-- Keep `RELAY_API_KEY`, the AVNU key, RPC credentials, and relayer key server-side.
+- Keep `RELAY_API_KEY`, `RELAY_QUOTE_ATTESTATION_KEY`, the AVNU key, RPC credentials, and relayer
+  key server-side.
 - Run a small-value canary before enabling unrestricted amounts. In particular, verify Circle's
   forward mint is detected by Relay's strict deposit address and that Relay gas top-up covers the A1
   CCTP transaction. Deposit and sell-return Relay legs are not yet recoverable across a browser

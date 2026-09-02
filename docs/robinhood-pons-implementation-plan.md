@@ -91,9 +91,9 @@ Remaining security work:
 - provider credential isolation on the server; and
 - disclosure that Relay, Circle, browser storage, and app infrastructure can correlate edges.
 
-Completed hardening: sell returns now fail closed unless the relayer independently resolves the
-authenticated Relay request and binds its R2 user, refund owner, strict deposit address, route,
-amount, executable status, and quote age. Browser recovery namespaces are derived from the identity
+Completed hardening: sell returns now fail closed unless the policy relayer verifies the trusted
+quote proxy's short-lived MAC binding for the request ID, R2 user, refund owner, isolated recipient,
+strict deposit address, and amount. Browser recovery namespaces are derived from the identity
 signature rather than R1, and legacy R1-keyed records are migrated and deleted.
 
 Exit gate: adversarial tests, independent review, and an end-to-end small-value launch/buy/sell/

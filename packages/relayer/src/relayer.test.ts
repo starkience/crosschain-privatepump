@@ -243,20 +243,20 @@ describe("relayer environment policy", () => {
     expect(relayer.policy.allowedTargets).toBeUndefined();
   });
 
-  it("requires authenticated Relay lookup for the Pons return policy", () => {
+  it("requires a quote-attestation key for the Pons return policy", () => {
     expect(() =>
       relayerFromEnv({
         ...BASE_ENV,
         CHAIN_ID: "4663",
         PONS_V2_POLICY: "true",
       }),
-    ).toThrow(/RELAY_API_KEY is required/);
+    ).toThrow(/RELAY_QUOTE_ATTESTATION_KEY is required/);
 
     const relayer = relayerFromEnv({
       ...BASE_ENV,
       CHAIN_ID: "4663",
       PONS_V2_POLICY: "true",
-      RELAY_API_KEY: "server-key",
+      RELAY_QUOTE_ATTESTATION_KEY: "11".repeat(32),
     });
     expect(relayer.policy.semanticValidator).toBeTypeOf("function");
   });

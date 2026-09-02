@@ -109,8 +109,9 @@ Pons stack.
 The mainnet MVP transport is implemented as STRK20/Circle Fast CCTP ↔ Arbitrum USDC ↔ Relay ↔
 Robinhood USDG. The browser validates Relay's strict deposit transaction before every irreversible
 burn and persists the private-funding request so it resumes rather than double-burning. For sell
-returns, the policy relayer independently resolves the authenticated Relay request and binds the
-strict deposit address, route, amount, refund owner, and quote age before broadcast. A small mainnet
+returns, the same-origin proxy signs a short-lived binding for Relay's exact quote, and the policy
+relayer verifies the request ID, strict deposit address, amount, refund owner, and isolated recipient
+before broadcast. A small mainnet
 canary remains mandatory before enabling general use. See the [Relay architecture](docs/private-pons-relay.md), [assessment](docs/robinhood-pons-assessment.md),
 [architecture](docs/robinhood-pons-architecture.md), [transport analysis](docs/bridge-transport-analysis.md),
 and [phased plan](docs/robinhood-pons-implementation-plan.md).

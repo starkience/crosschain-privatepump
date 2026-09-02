@@ -4,6 +4,14 @@ import type {
   IncomingMessage,
   ServerResponse,
 } from "node:http";
+import { getAddress, isAddress, type Address } from "viem";
+import {
+  ARBITRUM_CHAIN_ID,
+  ARBITRUM_NATIVE_USDC,
+  ROBINHOOD_CHAIN_ID,
+  ROBINHOOD_USDG,
+} from "@private-launchpad/sdk";
+import { createRelayQuoteAttestation } from "../../../packages/relayer/src/relay-quote-attestation.js";
 import { relayStarkscanProverRequest } from "../src/starkscan-prover-relay.js";
 import { relayStarkwareProverRequest } from "../src/starkware-prover-relay.js";
 import {
@@ -15,6 +23,7 @@ const MAX_BODY_BYTES = 1024 * 1024;
 const UPSTREAM_READ_ATTEMPTS = 4;
 const UPSTREAM_RETRY_BASE_MS = 250;
 const RETRYABLE_UPSTREAM_STATUSES = new Set([429, 502, 503, 504]);
+const RELAY_QUOTE_ATTESTATION_TTL_MS = 15 * 60_000;
 
 type ServiceKind =
   | "evm-rpc"
@@ -184,17 +193,208 @@ export default async function handler(
       response.setHeader("x-privatepons-upstream-retries", retries);
     }
 
+    const upstreamBody = Buffer.from(await result.arrayBuffer());
+    const responseBody =
+      service.kind === "relay" && result.ok
+        ? attestRelayReturnQuote(incoming, body, upstreamBody)
+        : upstreamBody;
+
     response.statusCode = result.status;
     const contentType = result.headers.get("content-type");
     if (contentType) response.setHeader("content-type", contentType);
     const retryAfter = result.headers.get("retry-after");
     if (retryAfter) response.setHeader("retry-after", retryAfter);
-    response.end(Buffer.from(await result.arrayBuffer()));
+    response.end(responseBody);
   } catch (error) {
     const message =
       error instanceof Error ? error.message : "proxy request failed";
     json(response, proxyErrorStatus(message), { error: message });
   }
+}
+
+function attestRelayReturnQuote(
+  incoming: URL,
+  requestBody: Buffer | undefined,
+  upstreamBody: Buffer,
+): Buffer {
+  const path = `/${(incoming.searchParams.get("path") || "").replace(/^\/+/, "")}`;
+  if (path !== "/quote/v2") return upstreamBody;
+
+  const request = object(parseJson(requestBody), "Relay quote request");
+  if (
+    Number(request.originChainId) !== ROBINHOOD_CHAIN_ID ||
+    Number(request.destinationChainId) !== ARBITRUM_CHAIN_ID
+  ) {
+    return upstreamBody;
+  }
+  if (
+    addressValue(request.originCurrency, "Relay origin currency") !==
+      ROBINHOOD_USDG ||
+    addressValue(request.destinationCurrency, "Relay destination currency") !==
+      ARBITRUM_NATIVE_USDC ||
+    request.useDepositAddress !== true ||
+    request.strict !== true
+  ) {
+    throw new Error(
+      "Relay return quote does not use the required strict route",
+    );
+  }
+
+  const account = addressValue(request.user, "Relay return user");
+  const owner = addressValue(request.refundTo, "Relay return refund address");
+  const recipient = addressValue(request.recipient, "Relay return recipient");
+  const amount = positiveDecimal(request.amount, "Relay return amount");
+  const quote = object(
+    JSON.parse(upstreamBody.toString("utf8")) as unknown,
+    "Relay quote",
+  );
+  const requestId = stringValue(quote.requestId, "Relay request ID");
+  if (!/^0x[0-9a-fA-F]{64}$/.test(requestId)) {
+    throw new Error("Relay request ID is invalid");
+  }
+
+  const details = object(quote.details, "Relay quote details");
+  assertQuoteCurrency(
+    details.currencyIn,
+    ROBINHOOD_CHAIN_ID,
+    ROBINHOOD_USDG,
+    amount,
+    "input",
+  );
+  assertQuoteCurrency(
+    details.currencyOut,
+    ARBITRUM_CHAIN_ID,
+    ARBITRUM_NATIVE_USDC,
+    undefined,
+    "output",
+  );
+  const steps = Array.isArray(quote.steps) ? quote.steps : [];
+  const depositSteps = steps.filter(
+    (candidate) => objectOrUndefined(candidate)?.id === "deposit",
+  );
+  if (depositSteps.length !== 1) {
+    throw new Error("Relay return quote must contain one deposit step");
+  }
+  const items = object(depositSteps[0], "Relay deposit step").items;
+  if (!Array.isArray(items) || items.length !== 1) {
+    throw new Error("Relay return quote must contain one deposit transaction");
+  }
+  const transaction = object(
+    object(items[0], "Relay deposit item").data,
+    "Relay deposit transaction",
+  );
+  if (
+    Number(transaction.chainId) !== ROBINHOOD_CHAIN_ID ||
+    addressValue(transaction.from, "Relay deposit sender") !== account ||
+    addressValue(transaction.to, "Relay deposit token") !== ROBINHOOD_USDG ||
+    BigInt(String(transaction.value ?? "0")) !== 0n
+  ) {
+    throw new Error(
+      "Relay return deposit transaction changed the strict route",
+    );
+  }
+  const transfer = decodeTransfer(
+    stringValue(transaction.data, "Relay deposit calldata"),
+  );
+  if (transfer.amount !== amount) {
+    throw new Error("Relay return deposit amount changed");
+  }
+
+  const issuedAt = Date.now();
+  const privatePonsAttestation = createRelayQuoteAttestation(
+    requiredEnvironment("RELAY_QUOTE_ATTESTATION_KEY"),
+    {
+      requestId,
+      account,
+      owner,
+      recipient,
+      depositAddress: transfer.recipient,
+      amount,
+      issuedAt,
+      expiresAt: issuedAt + RELAY_QUOTE_ATTESTATION_TTL_MS,
+    },
+  );
+  return Buffer.from(JSON.stringify({ ...quote, privatePonsAttestation }));
+}
+
+function assertQuoteCurrency(
+  value: unknown,
+  chainId: number,
+  address: Address,
+  expectedAmount: bigint | undefined,
+  label: string,
+): void {
+  const currency = object(value, `Relay ${label} currency amount`);
+  const descriptor = object(
+    currency.currency,
+    `Relay ${label} currency descriptor`,
+  );
+  if (
+    Number(descriptor.chainId) !== chainId ||
+    addressValue(descriptor.address, `Relay ${label} currency`) !== address
+  ) {
+    throw new Error(`Relay return ${label} currency changed`);
+  }
+  const amount = positiveDecimal(
+    currency.amount,
+    `Relay ${label} currency amount`,
+  );
+  if (expectedAmount !== undefined && amount !== expectedAmount) {
+    throw new Error(`Relay return ${label} amount changed`);
+  }
+}
+
+function decodeTransfer(value: string): {
+  recipient: Address;
+  amount: bigint;
+} {
+  if (
+    !/^0x[0-9a-fA-F]{136}$/.test(value) ||
+    value.slice(0, 10).toLowerCase() !== "0xa9059cbb" ||
+    !/^0{24}[0-9a-fA-F]{40}$/.test(value.slice(10, 74))
+  ) {
+    throw new Error("Relay return calldata is not an exact ERC-20 transfer");
+  }
+  return {
+    recipient: getAddress(`0x${value.slice(34, 74)}`),
+    amount: BigInt(`0x${value.slice(74)}`),
+  };
+}
+
+function addressValue(value: unknown, field: string): Address {
+  if (typeof value !== "string" || !isAddress(value, { strict: true })) {
+    throw new Error(`${field} must be an address`);
+  }
+  return getAddress(value);
+}
+
+function positiveDecimal(value: unknown, field: string): bigint {
+  if (typeof value !== "string" || !/^[1-9][0-9]*$/.test(value)) {
+    throw new Error(`${field} must be a positive integer string`);
+  }
+  return BigInt(value);
+}
+
+function stringValue(value: unknown, field: string): string {
+  if (typeof value !== "string" || !value) {
+    throw new Error(`${field} must be a string`);
+  }
+  return value;
+}
+
+function object(value: unknown, field: string): Record<string, unknown> {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new Error(`${field} must be an object`);
+  }
+  return value as Record<string, unknown>;
+}
+
+function objectOrUndefined(
+  value: unknown,
+): Record<string, unknown> | undefined {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : undefined;
 }
 
 async function fetchUpstream(
@@ -366,7 +566,12 @@ function forwardHeaders(source: IncomingHttpHeaders): Headers {
 }
 
 function proxyErrorStatus(message: string): number {
-  if (/proof state|PROVER_STATE_|PROVER_PROVIDER/i.test(message)) return 503;
+  if (
+    /proof state|PROVER_STATE_|PROVER_PROVIDER|RELAY_QUOTE_ATTESTATION_KEY/i.test(
+      message,
+    )
+  )
+    return 503;
   return /too large|invalid|required|not allowed|must|only|explicit|sender|unsupported/i.test(
     message,
   )

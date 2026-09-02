@@ -26,6 +26,7 @@ const request: RelayExecutionRequest = {
   },
   signature: `0x${"11".repeat(65)}`,
   relayRequestId: `0x${"aa".repeat(32)}`,
+  relayQuoteAttestation: "v1.payload.signature",
 };
 
 describe("relayer request boundary", () => {
@@ -40,6 +41,15 @@ describe("relayer request boundary", () => {
         relayRequestId: "quote-1",
       }),
     ).toThrow(/32-byte hex/);
+  });
+
+  it("rejects malformed Relay quote attestations", () => {
+    expect(() =>
+      parseRelayRequest({
+        ...relayRequestJson(request),
+        relayQuoteAttestation: "not-an-attestation",
+      }),
+    ).toThrow(/valid v1 attestation/);
   });
 
   it("enforces target allowlists and deadlines", () => {

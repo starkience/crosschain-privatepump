@@ -63,6 +63,7 @@ function quote(amount = 999_000n) {
 function reverseQuote(amount = 30_000_000n) {
   return {
     requestId: `0x${"cd".repeat(32)}`,
+    privatePonsAttestation: "v1.payload.signature",
     details: {
       currencyIn: {
         currency: { chainId: 4663, address: ROBINHOOD_USDG },
@@ -198,6 +199,7 @@ describe("Relay cross-chain bridge", () => {
 
   it("carries the Relay request ID into the policy-relayer return batch", async () => {
     const relayRequestId = `0x${"cd".repeat(32)}`;
+    const relayQuoteAttestation = "v1.payload.signature";
     const submitCalls = vi.fn(async () => {
       throw new Error("stop after submission capture");
     });
@@ -205,6 +207,7 @@ describe("Relay cross-chain bridge", () => {
       relay: {
         quoteRobinhoodUsdgToArbitrumUsdc: vi.fn(async () => ({
           requestId: relayRequestId,
+          quoteAttestation: relayQuoteAttestation,
           inputAmount: 30_000_000n,
           outputAmount: 29_637_540n,
           minimumOutputAmount: 29_341_164n,
@@ -255,7 +258,7 @@ describe("Relay cross-chain bridge", () => {
           data: transferData(DEPOSIT, 30_000_000n),
         },
       ],
-      { relayRequestId },
+      { relayRequestId, relayQuoteAttestation },
     );
   });
 

@@ -57,6 +57,9 @@ export function parseRelayRequest(value: unknown): RelayExecutionRequest {
     recipient: address(rawFee.recipient, "fee.recipient"),
   };
   const relayRequestId = optionalRelayRequestId(input.relayRequestId);
+  const relayQuoteAttestation = optionalRelayQuoteAttestation(
+    input.relayQuoteAttestation,
+  );
   return {
     chainId: safeNumber(input.chainId, "chainId"),
     factory: address(input.factory, "factory"),
@@ -70,6 +73,7 @@ export function parseRelayRequest(value: unknown): RelayExecutionRequest {
     fee,
     signature: hex(input.signature, "signature"),
     ...(relayRequestId ? { relayRequestId } : {}),
+    ...(relayQuoteAttestation ? { relayQuoteAttestation } : {}),
   };
 }
 
@@ -95,4 +99,16 @@ function optionalRelayRequestId(value: unknown): string | undefined {
     throw new Error("relayRequestId must be a 32-byte hex request ID");
   }
   return value.toLowerCase();
+}
+
+function optionalRelayQuoteAttestation(value: unknown): string | undefined {
+  if (value === undefined) return undefined;
+  if (
+    typeof value !== "string" ||
+    value.length > 2_048 ||
+    !/^v1\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/.test(value)
+  ) {
+    throw new Error("relayQuoteAttestation must be a valid v1 attestation");
+  }
+  return value;
 }
