@@ -1046,6 +1046,10 @@ export function App({ runtime }: AppProps) {
   const [positionRecovery, setPositionRecovery] =
     useState<PositionRecoveryState>({ status: "idle" });
   const positionRecoveryId = useRef(0);
+  const positionRecoveryAbort = useRef<AbortController | undefined>(undefined);
+  const positionRecoveryRequest = useRef<
+    Promise<PrivatePosition[]> | undefined
+  >(undefined);
   const storageScopesByRoot = useRef(new Map<string, PrivateStorageScope>());
   const [activePositionId, setActivePositionId] = useState<string>();
   const [lastTrade, setLastTrade] = useState<TradeExecution>();
@@ -1648,6 +1652,9 @@ export function App({ runtime }: AppProps) {
 
     const recoveryId = positionRecoveryId.current + 1;
     positionRecoveryId.current = recoveryId;
+    positionRecoveryAbort.current?.abort();
+    const controller = new AbortController();
+    positionRecoveryAbort.current = controller;
     setPositionRecovery({ status: "scanning" });
 
     try {
@@ -1658,7 +1665,9 @@ export function App({ runtime }: AppProps) {
       rememberStorageScope(prepared);
       setConnectedWallet(rootAddress);
       setIdentity(prepared);
-      const recovered = await runtime.recoverPositions();
+      const request = runtime.recoverPositions(controller.signal);
+      positionRecoveryRequest.current = request;
+      const recovered = await request;
       if (positionRecoveryId.current !== recoveryId) return [];
 
       const sameRoot =
@@ -1689,6 +1698,9 @@ export function App({ runtime }: AppProps) {
       });
       return next;
     } catch (reason) {
+      if (controller.signal.aborted) {
+        return [...(basePositions ?? positions)];
+      }
       if (positionRecoveryId.current === recoveryId) {
         setPositionRecovery({
           status: "error",
@@ -1696,7 +1708,20 @@ export function App({ runtime }: AppProps) {
         });
       }
       return [...(basePositions ?? positions)];
+    } finally {
+      if (positionRecoveryAbort.current === controller) {
+        positionRecoveryAbort.current = undefined;
+        positionRecoveryRequest.current = undefined;
+      }
     }
+  }
+
+  async function stopPositionRecovery(): Promise<void> {
+    positionRecoveryId.current += 1;
+    positionRecoveryAbort.current?.abort();
+    const pending = positionRecoveryRequest.current;
+    if (pending) await pending.catch(() => undefined);
+    setPositionRecovery({ status: "idle" });
   }
 
   function commitPosition(
@@ -2734,6 +2759,7 @@ export function App({ runtime }: AppProps) {
     if (!connectedWallet || busy) return;
     setError(undefined);
     try {
+      await stopPositionRecovery();
       setActivePositionId(position.id);
       await prepareFreshIdentity(position.accountIndex);
       patchPosition(connectedWallet, position.id, {
@@ -2769,6 +2795,7 @@ export function App({ runtime }: AppProps) {
     setReturnResult(undefined);
     const candidates = [...unusedReturnPositions];
     try {
+      await stopPositionRecovery();
       await prepareFreshIdentity(0);
       for (const position of candidates) {
         patchPosition(connectedWallet, position.id, { status: "returning" });

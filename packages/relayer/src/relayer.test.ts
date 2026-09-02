@@ -157,6 +157,31 @@ describe("private launchpad relayer", () => {
     expect(simulateContract).toHaveBeenCalledOnce();
   });
 
+  it("retries an opaque return-transfer simulation for a funded fresh account", async () => {
+    const request = await signedRequest([
+      {
+        target: TARGET,
+        value: 0n,
+        data: encodeFunctionData({
+          abi: erc20Abi,
+          functionName: "transfer",
+          args: [FACTORY, 10n],
+        }),
+      },
+    ]);
+    const { relayer, simulateContract, sleep } = fixture(undefined, 1n, {
+      tokenBalances: [10n],
+      simulationErrors: [
+        new Error('The contract function "deployAndExecute" reverted.'),
+        new Error('The contract function "deployAndExecute" reverted.'),
+      ],
+    });
+
+    await expect(relayer.relay(request)).resolves.toBe(TX_HASH);
+    expect(simulateContract).toHaveBeenCalledTimes(3);
+    expect(sleep).toHaveBeenCalledTimes(2);
+  });
+
   it("does not simulate when fresh-account funding is still missing", async () => {
     const request = await signedRequest([
       {

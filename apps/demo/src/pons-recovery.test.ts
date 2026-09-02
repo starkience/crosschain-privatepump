@@ -156,4 +156,49 @@ describe("Pons onchain position recovery", () => {
     ).resolves.toEqual([]);
     expect(getLogs).toHaveBeenCalledTimes(2);
   });
+
+  it("scans the current factory history without 50k request bursts", async () => {
+    const getLogs = vi.fn(async () => []);
+    const publicClient = {
+      getLogs,
+      getBlockNumber: vi.fn(async () => 4_500_000n),
+    } as unknown as PublicClient;
+    const client = {
+      channel: "private-launchpad-v1",
+      config: {
+        factory: FACTORY,
+        publicClient,
+        bridge: { deriveEvmOwner: vi.fn() },
+      },
+    } as unknown as PrivateLaunchpadClient;
+
+    await expect(
+      recoverPonsPositions({ client, signature: "0x1234", fromBlock: 0n }),
+    ).resolves.toEqual([]);
+    expect(getLogs).toHaveBeenCalledOnce();
+  });
+
+  it("stops before issuing RPC requests when recovery is cancelled", async () => {
+    const getBlockNumber = vi.fn(async () => 120n);
+    const client = {
+      channel: "private-launchpad-v1",
+      config: {
+        factory: FACTORY,
+        publicClient: { getBlockNumber },
+        bridge: { deriveEvmOwner: vi.fn() },
+      },
+    } as unknown as PrivateLaunchpadClient;
+    const controller = new AbortController();
+    controller.abort();
+
+    await expect(
+      recoverPonsPositions({
+        client,
+        signature: "0x1234",
+        fromBlock: 90n,
+        signal: controller.signal,
+      }),
+    ).rejects.toMatchObject({ name: "AbortError" });
+    expect(getBlockNumber).not.toHaveBeenCalled();
+  });
 });

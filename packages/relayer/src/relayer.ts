@@ -150,12 +150,12 @@ export class PrivateLaunchpadRelayer {
       : 0n;
     if (currentNonce !== request.nonce) throw new Error("stale account nonce");
 
-    const approvedSpend = exactApprovedSpend(request);
-    if (!accountDeployed && approvedSpend) {
-      await waitForApprovedSpendBalance(
+    const requiredTokenBalance = exactRequiredTokenBalance(request);
+    if (!accountDeployed && requiredTokenBalance) {
+      await waitForRequiredTokenBalance(
         publicClient,
         request.account,
-        approvedSpend,
+        requiredTokenBalance,
         sleep,
       );
     }
@@ -180,7 +180,7 @@ export class PrivateLaunchpadRelayer {
     };
     const simulation = await simulateWithFreshStateRetry(
       () => publicClient.simulateContract(parameters),
-      !accountDeployed && approvedSpend !== undefined,
+      !accountDeployed && requiredTokenBalance !== undefined,
       sleep,
     );
 
@@ -200,19 +200,23 @@ export class PrivateLaunchpadRelayer {
   }
 }
 
-interface ApprovedSpend {
+interface RequiredTokenBalance {
   readonly token: Address;
   readonly amount: bigint;
 }
 
-function exactApprovedSpend(
+function exactRequiredTokenBalance(
   request: RelayExecutionRequest,
-): ApprovedSpend | undefined {
+): RequiredTokenBalance | undefined {
   const firstCall = request.calls[0];
   if (!firstCall || firstCall.value !== 0n) return undefined;
   try {
     const decoded = decodeFunctionData({ abi: erc20Abi, data: firstCall.data });
-    if (decoded.functionName !== "approve" || decoded.args[1] <= 0n) {
+    if (
+      (decoded.functionName !== "approve" &&
+        decoded.functionName !== "transfer") ||
+      decoded.args[1] <= 0n
+    ) {
       return undefined;
     }
     return { token: getAddress(firstCall.target), amount: decoded.args[1] };
@@ -221,10 +225,10 @@ function exactApprovedSpend(
   }
 }
 
-async function waitForApprovedSpendBalance(
+async function waitForRequiredTokenBalance(
   publicClient: PublicClient,
   account: Address,
-  spend: ApprovedSpend,
+  spend: RequiredTokenBalance,
   sleep: (milliseconds: number) => Promise<void>,
 ): Promise<void> {
   let visibleBalance = 0n;

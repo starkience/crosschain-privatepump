@@ -17,7 +17,10 @@ import {
 import type { PrivatePosition } from "./positions.js";
 
 const PRIVATE_FACTORY_DEPLOYMENT_BLOCK = 48_000_000n;
-const MAX_LOG_BLOCK_RANGE = 50_000n;
+// Robinhood's RPC accepts this factory's complete history in one query. Start
+// wide and retain the adaptive halving below for providers with smaller caps;
+// 50k slices caused dozens of unnecessary requests and burst-rate limiting.
+const MAX_LOG_BLOCK_RANGE = 5_000_000n;
 const MIN_LOG_BLOCK_RANGE = 500n;
 const RPC_RATE_LIMIT_ATTEMPTS = 4;
 const RPC_RATE_LIMIT_RETRY_BASE_MS = 500;
@@ -76,6 +79,7 @@ interface RecoveryOptions {
   client: PrivateLaunchpadClient;
   signature: string;
   fromBlock?: bigint;
+  signal?: AbortSignal;
 }
 
 interface AccountCandidate extends PrivateLaunchpadSession {
@@ -92,14 +96,17 @@ export async function recoverPonsPositions({
   client,
   signature,
   fromBlock = PRIVATE_FACTORY_DEPLOYMENT_BLOCK,
+  signal,
 }: RecoveryOptions): Promise<PrivatePosition[]> {
   if (!/^0x[0-9a-fA-F]+$/.test(signature)) {
     throw new Error("identity signature must be hex");
   }
 
   const publicClient = client.config.publicClient;
-  const latestBlock = await retryRateLimited(() =>
-    publicClient.getBlockNumber(),
+  throwIfRecoveryCancelled(signal);
+  const latestBlock = await retryRateLimited(
+    () => publicClient.getBlockNumber(),
+    signal,
   );
   const accountEvents = await getLogsInBlockRanges(
     fromBlock,
@@ -110,6 +117,7 @@ export async function recoverPonsPositions({
         event: ACCOUNT_CREATED_EVENT,
         ...range,
       }),
+    signal,
   );
 
   const accounts: AccountCandidate[] = [];
@@ -145,8 +153,9 @@ export async function recoverPonsPositions({
 
   const recovered: PrivatePosition[][] = [];
   for (const account of accounts) {
+    throwIfRecoveryCancelled(signal);
     recovered.push(
-      await recoverAccountPositions(publicClient, account, latestBlock),
+      await recoverAccountPositions(publicClient, account, latestBlock, signal),
     );
   }
   return recovered
@@ -192,6 +201,7 @@ async function recoverAccountPositions(
   publicClient: PublicClient,
   session: AccountCandidate,
   latestBlock: bigint,
+  signal?: AbortSignal,
 ): Promise<PrivatePosition[]> {
   const incomingTransfers = await getLogsInBlockRanges(
     session.blockNumber,
@@ -202,6 +212,7 @@ async function recoverAccountPositions(
         args: { to: session.account },
         ...range,
       }),
+    signal,
   );
   const launches = await getLogsInBlockRanges(
     session.blockNumber,
@@ -213,6 +224,7 @@ async function recoverAccountPositions(
         args: { deployer: session.account },
         ...range,
       }),
+    signal,
   );
 
   const launchByToken = new Map(
@@ -239,22 +251,27 @@ async function recoverAccountPositions(
   ]);
   const positions: PrivatePosition[] = [];
   for (const tokenKey of candidateTokens) {
+    throwIfRecoveryCancelled(signal);
     const token = getAddress(tokenKey);
-    const balance = await retryRateLimited(() =>
-      publicClient.readContract({
-        address: token,
-        abi: erc20BalanceAbi,
-        functionName: "balanceOf",
-        args: [session.account],
-      }),
+    const balance = await retryRateLimited(
+      () =>
+        publicClient.readContract({
+          address: token,
+          abi: erc20BalanceAbi,
+          functionName: "balanceOf",
+          args: [session.account],
+        }),
+      signal,
     );
-    const launch = await retryRateLimited(() =>
-      publicClient.readContract({
-        address: PONS_V2_ROBINHOOD.factory,
-        abi: ponsV2FactoryAbi,
-        functionName: "getLaunchedToken",
-        args: [token],
-      }),
+    const launch = await retryRateLimited(
+      () =>
+        publicClient.readContract({
+          address: PONS_V2_ROBINHOOD.factory,
+          abi: ponsV2FactoryAbi,
+          functionName: "getLaunchedToken",
+          args: [token],
+        }),
+      signal,
     ).catch(() => undefined);
     if (
       !launch?.exists ||
@@ -280,8 +297,9 @@ async function recoverAccountPositions(
     const receipts = [];
     for (const hash of transactionHashes) {
       receipts.push(
-        await retryRateLimited(() =>
-          publicClient.getTransactionReceipt({ hash }),
+        await retryRateLimited(
+          () => publicClient.getTransactionReceipt({ hash }),
+          signal,
         ),
       );
     }
@@ -305,8 +323,9 @@ async function recoverAccountPositions(
       undefined,
     );
     const block = earliestBlock
-      ? await retryRateLimited(() =>
-          publicClient.getBlock({ blockNumber: earliestBlock }),
+      ? await retryRateLimited(
+          () => publicClient.getBlock({ blockNumber: earliestBlock }),
+          signal,
         )
       : undefined;
     const createdAt = block ? Number(block.timestamp) * 1_000 : Date.now();
@@ -343,6 +362,7 @@ async function getLogsInBlockRanges<T>(
     fromBlock: bigint;
     toBlock: bigint;
   }) => Promise<readonly T[]>,
+  signal?: AbortSignal,
 ): Promise<T[]> {
   if (toBlock < fromBlock) return [];
 
@@ -350,12 +370,14 @@ async function getLogsInBlockRanges<T>(
   let cursor = fromBlock;
   let blockRange = MAX_LOG_BLOCK_RANGE;
   while (cursor <= toBlock) {
+    throwIfRecoveryCancelled(signal);
     const chunkEnd =
       cursor + blockRange - 1n < toBlock ? cursor + blockRange - 1n : toBlock;
     try {
       logs.push(
-        ...(await retryRateLimited(() =>
-          query({ fromBlock: cursor, toBlock: chunkEnd }),
+        ...(await retryRateLimited(
+          () => query({ fromBlock: cursor, toBlock: chunkEnd }),
+          signal,
         )),
       );
       cursor = chunkEnd + 1n;
@@ -382,9 +404,13 @@ async function getLogsInBlockRanges<T>(
   return logs;
 }
 
-async function retryRateLimited<T>(operation: () => Promise<T>): Promise<T> {
+async function retryRateLimited<T>(
+  operation: () => Promise<T>,
+  signal?: AbortSignal,
+): Promise<T> {
   let lastError: unknown;
   for (let attempt = 0; attempt < RPC_RATE_LIMIT_ATTEMPTS; attempt += 1) {
+    throwIfRecoveryCancelled(signal);
     try {
       return await operation();
     } catch (error) {
@@ -402,6 +428,12 @@ async function retryRateLimited<T>(operation: () => Promise<T>): Promise<T> {
     }
   }
   throw lastError;
+}
+
+function throwIfRecoveryCancelled(signal: AbortSignal | undefined): void {
+  if (signal?.aborted) {
+    throw new DOMException("Position recovery cancelled", "AbortError");
+  }
 }
 
 function isLogRangeTimeout(error: unknown): boolean {

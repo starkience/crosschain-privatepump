@@ -77,8 +77,12 @@ export async function createPrivatePonsLiveRuntime(
     depositProvider: () => injectedProvider(),
     readMarketMetadata: (token) =>
       readPonsTokenMetadata(client.config.publicClient, token),
-    recoverPositions: ({ signature }) =>
-      recoverPonsPositions({ client, signature }),
+    recoverPositions: ({ signature, signal }) =>
+      recoverPonsPositions({
+        client,
+        signature,
+        ...(signal ? { signal } : {}),
+      }),
     buildOpenIntent: (draft) => ({
       name: draft.name,
       symbol: draft.symbol,

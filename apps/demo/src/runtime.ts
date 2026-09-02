@@ -112,7 +112,7 @@ export interface LaunchpadRuntime {
     token: TradeDraft["token"],
   ): Promise<bigint>;
   readMarketMetadata?(token: TradeDraft["token"]): Promise<MarketMetadata>;
-  recoverPositions?(): Promise<PrivatePosition[]>;
+  recoverPositions?(signal?: AbortSignal): Promise<PrivatePosition[]>;
   quoteBuy(
     account: PrivateLaunchpadSession["account"],
     draft: TradeDraft,
@@ -169,6 +169,7 @@ export interface LiveRuntimeConfig<
     signature: string;
     connectedAddress: PrivateLaunchpadSession["account"];
     client: PrivateLaunchpadClient;
+    signal?: AbortSignal;
   }): Promise<PrivatePosition[]>;
   trade?: {
     quote(
@@ -425,12 +426,13 @@ export function createLiveRuntime<
       : {}),
     ...(config.recoverPositions
       ? {
-          recoverPositions: async () => {
+          recoverPositions: async (signal?: AbortSignal) => {
             const identity = requireIdentity();
             return config.recoverPositions!({
               signature: identity.identitySignature,
               connectedAddress: identity.connectedAddress,
               client: config.client,
+              ...(signal ? { signal } : {}),
             });
           },
         }
