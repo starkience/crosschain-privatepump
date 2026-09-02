@@ -2,6 +2,7 @@ import {
   decodeFunctionData,
   getAddress,
   isAddressEqual,
+  verifyMessage,
   type Address,
   type PublicClient,
 } from "viem";
@@ -16,6 +17,7 @@ import {
   quotePonsV2Sell,
   type PonsV2Deployment,
   type RelayExecutionRequest,
+  walletRecoveryMessage,
 } from "@private-launchpad/sdk";
 import type { SemanticCallValidator } from "./relayer.js";
 import type { RelayReturnVerifier } from "./relay-requests.js";
@@ -88,7 +90,16 @@ async function validatePrivateReturnTransfer(
     );
   }
   if (!request.relayRequestId) {
+    if (request.walletRecoveryAuthorization) {
+      await validateDirectWalletRecovery(request, recipient, amount);
+      return;
+    }
     throw new Error("Pons private return requires a Relay request ID");
+  }
+  if (request.walletRecoveryAuthorization) {
+    throw new Error(
+      "Pons return cannot combine Relay and direct-wallet authorization",
+    );
   }
   if (!request.relayQuoteAttestation) {
     throw new Error("Pons private return requires a Relay quote attestation");
@@ -104,6 +115,55 @@ async function validatePrivateReturnTransfer(
     depositAddress: recipient,
     amount,
   });
+}
+
+async function validateDirectWalletRecovery(
+  request: RelayExecutionRequest,
+  recipient: Address,
+  amount: bigint,
+): Promise<void> {
+  const authorization = request.walletRecoveryAuthorization!;
+  if (request.relayRequestId || request.relayQuoteAttestation) {
+    throw new Error(
+      "Pons direct wallet recovery cannot include Relay quote fields",
+    );
+  }
+  if (!isAddressEqual(authorization.recipient, recipient)) {
+    throw new Error("Pons direct recovery recipient is not authorized");
+  }
+  const now = BigInt(Math.floor(Date.now() / 1_000));
+  if (authorization.deadline < now) {
+    throw new Error("Pons direct recovery authorization expired");
+  }
+  if (authorization.deadline > now + 15n * 60n) {
+    throw new Error("Pons direct recovery authorization is too long-lived");
+  }
+  if (request.deadline > authorization.deadline) {
+    throw new Error(
+      "Pons execution outlives its direct recovery authorization",
+    );
+  }
+  const source = authorization.accounts.find((entry) =>
+    isAddressEqual(entry.account, request.account),
+  );
+  if (!source || source.amount !== amount) {
+    throw new Error("Pons direct recovery source or amount is not authorized");
+  }
+
+  const valid = await verifyMessage({
+    address: authorization.recipient,
+    message: walletRecoveryMessage({
+      chainId: request.chainId,
+      factory: request.factory,
+      recipient: authorization.recipient,
+      accounts: authorization.accounts,
+      deadline: authorization.deadline,
+    }),
+    signature: authorization.signature,
+  });
+  if (!valid) {
+    throw new Error("Pons direct recovery wallet signature is invalid");
+  }
 }
 
 async function validateLaunch(

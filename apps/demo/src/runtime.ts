@@ -14,6 +14,7 @@ import {
   type LaunchpadAdapter,
   type PrivateLaunchpadClient,
   type PrivateLaunchpadSession,
+  type WalletBatchReturnResult,
 } from "@private-launchpad/sdk";
 import { keccak256, toHex, type Hash, type Hex } from "viem";
 import type { PrivatePosition } from "./positions.js";
@@ -126,6 +127,10 @@ export interface LaunchpadRuntime {
     accountIndexes: readonly number[],
     onStep?: BridgeStepCallback,
   ): Promise<BridgeBatchReturnResult>;
+  returnMultipleToWallet(
+    accountIndexes: readonly number[],
+    onStep?: BridgeStepCallback,
+  ): Promise<WalletBatchReturnResult>;
   reset(): void;
 }
 
@@ -481,6 +486,20 @@ export function createLiveRuntime<
         ...(onStep ? { onStep } : {}),
       });
     },
+    async returnMultipleToWallet(accountIndexes, onStep) {
+      const identity = requireIdentity();
+      return config.client.returnSessionsToWallet({
+        signature: identity.identitySignature,
+        accountIndexes,
+        connectedEvmAddress: identity.connectedAddress,
+        authorize: (message) =>
+          config.signIdentity({
+            address: identity.connectedAddress,
+            message,
+          }),
+        ...(onStep ? { onStep } : {}),
+      });
+    },
     reset() {
       identitySignature = undefined;
       session = undefined;
@@ -674,6 +693,16 @@ export function createDemoRuntime(): LaunchpadRuntime {
         ranFreshBurn: true,
         alreadyClaimed: false,
         sourceAccountIndexes: accountIndexes,
+      };
+    },
+    async returnMultipleToWallet(accountIndexes, onStep) {
+      if (!prepared) throw new Error("demo identity is not prepared");
+      await demoSteps(["wallet-return"], onStep);
+      return {
+        amountReturned: 24_200_000n,
+        recipient: demoRoot,
+        sourceAccountIndexes: accountIndexes,
+        transactionHashes: [sampleHash("wallet-return")],
       };
     },
     reset() {

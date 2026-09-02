@@ -209,6 +209,41 @@ describe("private launchpad client", () => {
     );
   });
 
+  it("returns an idle session balance directly to an authorized root wallet", async () => {
+    const { client, relayRequests, waitForTransactionReceipt } = fixture(100n);
+    const authorize = vi.fn(async () => `0x${"88".repeat(65)}`);
+
+    await expect(
+      client.returnSessionsToWallet({
+        signature: "0x1234",
+        accountIndexes: [7],
+        connectedEvmAddress: CONNECTED,
+        authorize,
+      }),
+    ).resolves.toMatchObject({
+      amountReturned: 100n,
+      recipient: CONNECTED,
+      sourceAccountIndexes: [7],
+      transactionHashes: [TX_HASH],
+    });
+    expect(authorize).toHaveBeenCalledWith(
+      expect.stringContaining("PonsButPrivate direct wallet recovery"),
+    );
+    expect(relayRequests).toHaveLength(1);
+    expect(relayRequests[0]).toMatchObject({
+      calls: [{ target: USDC, value: 0n }],
+      walletRecoveryAuthorization: {
+        recipient: CONNECTED,
+        accounts: [{ account: ACCOUNT, amount: 100n }],
+      },
+    });
+    expect(waitForTransactionReceipt).toHaveBeenCalledWith({
+      hash: TX_HASH,
+      confirmations: 1,
+      timeout: 120_000,
+    });
+  });
+
   it("bridges directly to the deterministic smart account", async () => {
     const { client, fundAccountFromPool } = fixture();
     const result = await client.fundSession({

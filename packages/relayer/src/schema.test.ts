@@ -27,7 +27,17 @@ const request: RelayExecutionRequest = {
   signature: `0x${"11".repeat(65)}`,
   relayRequestId: `0x${"aa".repeat(32)}`,
   relayQuoteAttestation: "v1.payload.signature",
+  walletRecoveryAuthorization: {
+    recipient: "0x7777777777777777777777777777777777777777",
+    accounts: [{ account: requestAccount(), amount: 123n }],
+    deadline: 2_000_000_000n,
+    signature: `0x${"22".repeat(65)}`,
+  },
 };
+
+function requestAccount() {
+  return "0x2222222222222222222222222222222222222222" as const;
+}
 
 describe("relayer request boundary", () => {
   it("round-trips bigint fields through JSON", () => {
@@ -50,6 +60,24 @@ describe("relayer request boundary", () => {
         relayQuoteAttestation: "not-an-attestation",
       }),
     ).toThrow(/valid v1 attestation/);
+  });
+
+  it("rejects duplicate direct-wallet recovery accounts", () => {
+    const serialized = relayRequestJson(request);
+    const authorization = serialized.walletRecoveryAuthorization as Record<
+      string,
+      unknown
+    >;
+    const accounts = authorization.accounts as unknown[];
+    expect(() =>
+      parseRelayRequest({
+        ...serialized,
+        walletRecoveryAuthorization: {
+          ...authorization,
+          accounts: [accounts[0], accounts[0]],
+        },
+      }),
+    ).toThrow(/duplicate account/);
   });
 
   it("enforces target allowlists and deadlines", () => {

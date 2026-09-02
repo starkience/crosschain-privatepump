@@ -12,6 +12,18 @@ export interface RelayerFee {
   recipient: Address;
 }
 
+export interface WalletRecoveryEntry {
+  account: Address;
+  amount: bigint;
+}
+
+export interface WalletRecoveryAuthorization {
+  recipient: Address;
+  accounts: readonly WalletRecoveryEntry[];
+  deadline: bigint;
+  signature: Hex;
+}
+
 export interface PrivateLaunchpadSession {
   accountIndex: number;
   channel: string;
@@ -35,6 +47,8 @@ export interface RelayExecutionRequest {
   relayRequestId?: string;
   /** Server-signed binding for the exact strict Relay return quote. */
   relayQuoteAttestation?: string;
+  /** Root-wallet authorization for a deliberately public direct recovery. */
+  walletRecoveryAuthorization?: WalletRecoveryAuthorization;
 }
 
 export type RelayExecution = (request: RelayExecutionRequest) => Promise<Hash>;
@@ -71,6 +85,15 @@ export interface ExecuteOptions {
   relayRequestId?: string;
   /** Included for policy validation of a strict Relay return quote. */
   relayQuoteAttestation?: string;
+  /** Root-wallet authorization for a deliberately public direct recovery. */
+  walletRecoveryAuthorization?: WalletRecoveryAuthorization;
+}
+
+export interface WalletBatchReturnResult {
+  amountReturned: bigint;
+  recipient: Address;
+  sourceAccountIndexes: readonly number[];
+  transactionHashes: readonly Hash[];
 }
 
 export interface PrivateLaunchpadClientConfig {

@@ -35,6 +35,7 @@ import {
   type BridgeFundResult,
   type BridgeReturnResult,
   type PrivateLaunchpadSession,
+  type WalletBatchReturnResult,
 } from "@private-launchpad/sdk";
 import type {
   LaunchDraft,
@@ -1011,6 +1012,8 @@ export function App({ runtime }: AppProps) {
   const [identity, setIdentity] = useState<PreparedIdentity>();
   const [funding, setFunding] = useState<BridgeFundResult>();
   const [returnResult, setReturnResult] = useState<BridgeReturnResult>();
+  const [walletReturnResult, setWalletReturnResult] =
+    useState<WalletBatchReturnResult>();
   const [transactionHash, setTransactionHash] = useState<string>();
   const [connectedWallet, setConnectedWallet] =
     useState<PrivateLaunchpadSession["account"]>();
@@ -2758,6 +2761,7 @@ export function App({ runtime }: AppProps) {
   async function returnPosition(position: PrivatePosition) {
     if (!connectedWallet || busy) return;
     setError(undefined);
+    setWalletReturnResult(undefined);
     try {
       await stopPositionRecovery();
       setActivePositionId(position.id);
@@ -2766,9 +2770,10 @@ export function App({ runtime }: AppProps) {
         status: "returning",
       });
       setStage("returning");
-      const returned = await runtime.returnToPool();
-      setReturnResult(returned);
-      setPrivateBalance((balance) => balance + returned.amountReturned);
+      const returned = await runtime.returnMultipleToWallet([
+        position.accountIndex,
+      ]);
+      setWalletReturnResult(returned);
       patchPosition(connectedWallet, position.id, {
         status: "closed",
         lastError: undefined,
@@ -2793,6 +2798,7 @@ export function App({ runtime }: AppProps) {
     if (!connectedWallet || busy || unusedReturnPositions.length === 0) return;
     setError(undefined);
     setReturnResult(undefined);
+    setWalletReturnResult(undefined);
     const candidates = [...unusedReturnPositions];
     try {
       await stopPositionRecovery();
@@ -2801,11 +2807,10 @@ export function App({ runtime }: AppProps) {
         patchPosition(connectedWallet, position.id, { status: "returning" });
       }
       setStage("returning");
-      const returned = await runtime.returnMultipleToPool(
+      const returned = await runtime.returnMultipleToWallet(
         candidates.map((position) => position.accountIndex),
       );
-      setReturnResult(returned);
-      setPrivateBalance((balance) => balance + returned.amountReturned);
+      setWalletReturnResult(returned);
       for (const position of candidates) {
         patchPosition(connectedWallet, position.id, {
           status: "closed",
@@ -4326,8 +4331,8 @@ export function App({ runtime }: AppProps) {
                     >
                       <ShieldCheckIcon size={13} aria-hidden="true" />
                       {stage === "returning"
-                        ? "Returning all…"
-                        : `Return all unused (${unusedReturnPositions.length})`}
+                        ? "Recovering to wallet…"
+                        : `Recover to wallet (${unusedReturnPositions.length})`}
                     </button>
                     {runtime.recoverPositions && (
                       <button
@@ -4424,7 +4429,8 @@ export function App({ runtime }: AppProps) {
                         not in the connected root wallet. The app locally
                         matches your wallet-derived owners against public
                         account events, then rebuilds this map from live token
-                        balances. Your signature is never uploaded or stored.
+                        balances. Direct recovery sends unused USDG to your
+                        connected wallet and makes that link public onchain.
                       </p>
                     </div>
                     <span>RECOVERY READY</span>
@@ -4443,6 +4449,17 @@ export function App({ runtime }: AppProps) {
                           : positionRecovery.recovered > 0
                             ? `${positionRecovery.recovered} open position${positionRecovery.recovered === 1 ? "" : "s"} recovered from Robinhood.`
                             : "Recovery complete. No open onchain positions were found."}
+                    </p>
+                  )}
+                  {walletReturnResult && (
+                    <p
+                      className="portfolio-recovery-status"
+                      data-status="done"
+                      role="status"
+                    >
+                      {formatUsdc(walletReturnResult.amountReturned)} USDG
+                      recovered directly to{" "}
+                      {shorten(walletReturnResult.recipient)}.
                     </p>
                   )}
 
@@ -4690,7 +4707,7 @@ export function App({ runtime }: AppProps) {
                                     className="button"
                                     onClick={() => returnPosition(position)}
                                   >
-                                    Return USDG
+                                    Return USDG to wallet
                                   </button>
                                 </>
                               ) : position.status === "return-failed" ||
@@ -4699,7 +4716,7 @@ export function App({ runtime }: AppProps) {
                                   className="button button-brand"
                                   onClick={() => returnPosition(position)}
                                 >
-                                  Retry return
+                                  Retry wallet recovery
                                 </button>
                               ) : ["launching", "buying", "selling"].includes(
                                   position.status,
@@ -4715,7 +4732,7 @@ export function App({ runtime }: AppProps) {
                                   className="button button-brand"
                                   onClick={() => returnPosition(position)}
                                 >
-                                  Recover USDG
+                                  Recover USDG to wallet
                                 </button>
                               ) : (
                                 <button
@@ -4737,7 +4754,8 @@ export function App({ runtime }: AppProps) {
                     balances are authoritative for token custody. Onchain
                     recovery finds deployed accounts with open Pons balances;
                     funded accounts that never deployed still require their
-                    local recovery metadata.
+                    local recovery metadata. Direct wallet recovery is public
+                    and does not pass through STRK20.
                   </p>
                 </>
               ) : (

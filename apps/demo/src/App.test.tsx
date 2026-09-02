@@ -117,6 +117,12 @@ function fixture(
       alreadyClaimed: false,
       sourceAccountIndexes: accountIndexes,
     })),
+    returnMultipleToWallet: vi.fn(async (accountIndexes) => ({
+      amountReturned: 24_200_000n,
+      recipient: connectedAddress,
+      sourceAccountIndexes: accountIndexes,
+      transactionHashes: [`0x${"55".repeat(32)}` as `0x${string}`],
+    })),
     reset: vi.fn(),
     ...overrides,
   };
@@ -1109,7 +1115,7 @@ describe("Plank interface", () => {
     expect(recoverPositions).not.toHaveBeenCalled();
   });
 
-  it("returns all failed-account USDG through the batched recovery action", async () => {
+  it("returns all failed-account USDG directly to the connected wallet", async () => {
     const scope = `0x${"aa".repeat(32)}`;
     const key = `privatepons-private-positions-v2:8453:${scope}`;
     localStorage.setItem(
@@ -1150,11 +1156,11 @@ describe("Plank interface", () => {
     fireEvent.click(screen.getByRole("button", { name: /^back$/i }));
     fireEvent.click(screen.getByRole("button", { name: /positions/i }));
     fireEvent.click(
-      await screen.findByRole("button", { name: /return all unused \(2\)/i }),
+      await screen.findByRole("button", { name: /recover to wallet \(2\)/i }),
     );
 
     await waitFor(() =>
-      expect(runtime.returnMultipleToPool).toHaveBeenCalledWith([11, 12]),
+      expect(runtime.returnMultipleToWallet).toHaveBeenCalledWith([11, 12]),
     );
     await waitFor(() => {
       const stored = localStorage.getItem(key) ?? "";

@@ -1,4 +1,10 @@
-import { encodeFunctionData, type Address, type Hash, type Hex } from "viem";
+import {
+  encodeFunctionData,
+  getAddress,
+  type Address,
+  type Hash,
+  type Hex,
+} from "viem";
 import {
   privateLaunchpadAccountAbi,
   privateLaunchpadAccountFactoryAbi,
@@ -24,10 +30,15 @@ import {
   type Eip1193Provider,
   type RelayExecutionRequest,
   type RelayerFee,
+  type WalletBatchReturnResult,
+  type WalletRecoveryAuthorization,
 } from "./types.js";
+import { walletRecoveryMessage } from "./wallet-recovery.js";
 
 const DEFAULT_CHANNEL = "private-launchpad-v1";
 const DEFAULT_DEADLINE_SECONDS = 10 * 60;
+const RECOVERY_RPC_READ_ATTEMPTS = 4;
+const RECOVERY_RPC_RETRY_BASE_MS = 500;
 
 export class PrivateLaunchpadClient {
   readonly config: PrivateLaunchpadClientConfig;
@@ -364,13 +375,17 @@ export class PrivateLaunchpadClient {
     }
     const sources = [];
     for (const accountIndex of uniqueIndexes) {
-      const session = await this.deriveSession(args.signature, accountIndex);
-      const amount = await this.config.publicClient.readContract({
-        address: this.config.usdc,
-        abi: erc20Abi,
-        functionName: "balanceOf",
-        args: [session.account],
-      });
+      const session = await retryRateLimitedRead(() =>
+        this.deriveSession(args.signature, accountIndex),
+      );
+      const amount = await retryRateLimitedRead(() =>
+        this.config.publicClient.readContract({
+          address: this.config.usdc,
+          abi: erc20Abi,
+          functionName: "balanceOf",
+          args: [session.account],
+        }),
+      );
       if (amount <= 0n) continue;
       sources.push({
         session,
@@ -401,6 +416,126 @@ export class PrivateLaunchpadClient {
       sources,
       ...(args.onStep ? { onStep: args.onStep } : {}),
     });
+  }
+
+  /** Public emergency recovery from several position accounts to the root wallet. */
+  async returnSessionsToWallet(args: {
+    signature: string;
+    accountIndexes: readonly number[];
+    connectedEvmAddress: Address;
+    authorize(message: string): Promise<string>;
+    onStep?: BridgeStepCallback;
+  }): Promise<WalletBatchReturnResult> {
+    const uniqueIndexes = [...new Set(args.accountIndexes)];
+    if (
+      uniqueIndexes.length === 0 ||
+      uniqueIndexes.length > 20 ||
+      uniqueIndexes.some((index) => !Number.isSafeInteger(index) || index < 0)
+    ) {
+      throw new Error(
+        "direct wallet recovery requires between 1 and 20 valid account indexes",
+      );
+    }
+
+    const sources = [];
+    for (const accountIndex of uniqueIndexes) {
+      const session = await this.deriveSession(args.signature, accountIndex);
+      const amount = await this.config.publicClient.readContract({
+        address: this.config.usdc,
+        abi: erc20Abi,
+        functionName: "balanceOf",
+        args: [session.account],
+      });
+      if (amount > 0n) sources.push({ session, amount });
+    }
+    if (sources.length === 0) {
+      throw new Error("no unused USDG remains in the selected accounts");
+    }
+    sources.sort((left, right) =>
+      left.session.account
+        .toLowerCase()
+        .localeCompare(right.session.account.toLowerCase()),
+    );
+
+    const recipient = getAddress(args.connectedEvmAddress);
+    const authorizationDeadline = BigInt(
+      Math.floor(Date.now() / 1_000) + DEFAULT_DEADLINE_SECONDS,
+    );
+    const authorizationBase = {
+      recipient,
+      accounts: sources.map(({ session, amount }) => ({
+        account: session.account,
+        amount,
+      })),
+      deadline: authorizationDeadline,
+    } as const;
+    const rootSignature = await args.authorize(
+      walletRecoveryMessage({
+        chainId: this.config.chainId,
+        factory: this.config.factory,
+        ...authorizationBase,
+      }),
+    );
+    if (!/^0x[0-9a-fA-F]{130}$/.test(rootSignature)) {
+      throw new Error("wallet recovery authorization signature is invalid");
+    }
+    const authorization: WalletRecoveryAuthorization = {
+      ...authorizationBase,
+      signature: rootSignature as Hex,
+    };
+
+    let amountReturned = 0n;
+    const sourceAccountIndexes: number[] = [];
+    const transactionHashes: Hash[] = [];
+    for (const [index, source] of sources.entries()) {
+      args.onStep?.(
+        "wallet-return",
+        "running",
+        `returning account ${index + 1} of ${sources.length} directly to the connected wallet`,
+      );
+      const transactionHash = await this.execute(
+        args.signature,
+        source.session,
+        [
+          {
+            target: this.config.usdc,
+            value: 0n,
+            data: encodeFunctionData({
+              abi: erc20Abi,
+              functionName: "transfer",
+              args: [recipient, source.amount],
+            }),
+          },
+        ],
+        {
+          deadlineSeconds: 5 * 60,
+          walletRecoveryAuthorization: authorization,
+        },
+      );
+      // Retrying this read is safe: the transaction hash is already fixed and
+      // no additional recovery transaction is submitted by receipt polling.
+      const confirmation = await retryRateLimitedRead(() =>
+        this.waitForExecution(transactionHash),
+      );
+      if (confirmation.status !== "success") {
+        throw new Error("direct USDG wallet recovery reverted");
+      }
+      transactionHashes.push(transactionHash);
+      sourceAccountIndexes.push(source.session.accountIndex);
+      amountReturned += source.amount;
+      args.onStep?.(
+        "wallet-return",
+        "done",
+        `${index + 1}/${sources.length} accounts recovered`,
+      );
+    }
+
+    return {
+      amountReturned,
+      recipient,
+      sourceAccountIndexes,
+      transactionHashes,
+    };
   }
 
   encodeRelayCalldata(request: RelayExecutionRequest): Hex {
@@ -488,6 +623,11 @@ export class PrivateLaunchpadClient {
       ...(options.relayQuoteAttestation
         ? { relayQuoteAttestation: options.relayQuoteAttestation }
         : {}),
+      ...(options.walletRecoveryAuthorization
+        ? {
+            walletRecoveryAuthorization: options.walletRecoveryAuthorization,
+          }
+        : {}),
     };
   }
 
@@ -500,4 +640,29 @@ export class PrivateLaunchpadClient {
       );
     }
   }
+}
+
+async function retryRateLimitedRead<T>(read: () => Promise<T>): Promise<T> {
+  let lastError: unknown;
+  for (let attempt = 0; attempt < RECOVERY_RPC_READ_ATTEMPTS; attempt += 1) {
+    try {
+      return await read();
+    } catch (error) {
+      lastError = error;
+      const message = error instanceof Error ? error.message : String(error);
+      if (
+        !/too many requests|\b429\b|rate[ -]?limit/i.test(message) ||
+        attempt + 1 >= RECOVERY_RPC_READ_ATTEMPTS
+      ) {
+        throw error;
+      }
+      await new Promise((resolve) =>
+        globalThis.setTimeout(
+          resolve,
+          RECOVERY_RPC_RETRY_BASE_MS * 2 ** attempt,
+        ),
+      );
+    }
+  }
+  throw lastError;
 }

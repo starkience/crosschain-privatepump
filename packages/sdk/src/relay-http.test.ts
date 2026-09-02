@@ -28,6 +28,17 @@ const request: RelayExecutionRequest = {
     recipient: "0x6666666666666666666666666666666666666666",
   },
   signature: `0x${"12".repeat(65)}`,
+  walletRecoveryAuthorization: {
+    recipient: "0x7777777777777777777777777777777777777777",
+    accounts: [
+      {
+        account: "0x2222222222222222222222222222222222222222",
+        amount: 12n,
+      },
+    ],
+    deadline: 13n,
+    signature: `0x${"13".repeat(65)}`,
+  },
 };
 
 describe("HTTP relay transport", () => {
@@ -38,6 +49,10 @@ describe("HTTP relay transport", () => {
       deadline: "9",
       prefund: "10",
       fee: { amount: "11" },
+      walletRecoveryAuthorization: {
+        accounts: [{ amount: "12" }],
+        deadline: "13",
+      },
     });
     expect(() =>
       JSON.stringify(relayExecutionRequestJson(request)),

@@ -12,3 +12,4 @@ export * from "./identity.js";
 export * from "./relay-http.js";
 export * from "./relay-bridge.js";
 export * from "./types.js";
+export * from "./wallet-recovery.js";

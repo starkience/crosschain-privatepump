@@ -4,6 +4,7 @@ import {
   type Hex,
   type PublicClient,
 } from "viem";
+import { privateKeyToAccount } from "viem/accounts";
 import { describe, expect, it, vi } from "vitest";
 import {
   NO_RELAYER_FEE,
@@ -13,6 +14,7 @@ import {
   ponsV2CurveAbi,
   ponsV2FactoryAbi,
   type RelayExecutionRequest,
+  walletRecoveryMessage,
 } from "@private-launchpad/sdk";
 import { createPonsV2SemanticValidator } from "./pons-v2-policy.js";
 
@@ -23,6 +25,8 @@ const CURVE = "0x4444444444444444444444444444444444444444" as Address;
 const ACCOUNT_FACTORY = "0x5555555555555555555555555555555555555555" as Address;
 const DIGEST = `0x${"66".repeat(32)}` as Hex;
 const RELAY_REQUEST_ID = `0x${"88".repeat(32)}`;
+const ROOT_KEY = `0x${"99".repeat(32)}` as Hex;
+const ROOT = privateKeyToAccount(ROOT_KEY);
 
 const LAUNCH_RECORD = {
   token: TOKEN,
@@ -272,5 +276,85 @@ describe("Pons V2 relayer semantic policy", () => {
     await expect(validate(request([call]), client())).rejects.toThrow(
       /requires a Relay request ID/,
     );
+  });
+
+  it("accepts an exact, short-lived direct-wallet recovery authorization", async () => {
+    const amount = 25_000_000n;
+    const deadline = BigInt(Math.floor(Date.now() / 1_000) + 10 * 60);
+    const authorizationBase = {
+      recipient: ROOT.address,
+      accounts: [{ account: ACCOUNT, amount }],
+      deadline,
+    } as const;
+    const signature = await ROOT.signMessage({
+      message: walletRecoveryMessage({
+        chainId: 4663,
+        factory: ACCOUNT_FACTORY,
+        ...authorizationBase,
+      }),
+    });
+    const call = {
+      target: PONS_V2_ROBINHOOD.usdg,
+      value: 0n,
+      data: encodeFunctionData({
+        abi: erc20Abi,
+        functionName: "transfer",
+        args: [ROOT.address, amount],
+      }),
+    } as const;
+
+    await expect(
+      validate(
+        {
+          ...request([call]),
+          deadline: deadline - 1n,
+          walletRecoveryAuthorization: {
+            ...authorizationBase,
+            signature,
+          },
+        },
+        client(),
+      ),
+    ).resolves.toBeUndefined();
+  });
+
+  it("rejects a direct-wallet recovery whose transfer amount was changed", async () => {
+    const amount = 25_000_000n;
+    const deadline = BigInt(Math.floor(Date.now() / 1_000) + 10 * 60);
+    const authorizationBase = {
+      recipient: ROOT.address,
+      accounts: [{ account: ACCOUNT, amount }],
+      deadline,
+    } as const;
+    const signature = await ROOT.signMessage({
+      message: walletRecoveryMessage({
+        chainId: 4663,
+        factory: ACCOUNT_FACTORY,
+        ...authorizationBase,
+      }),
+    });
+    const call = {
+      target: PONS_V2_ROBINHOOD.usdg,
+      value: 0n,
+      data: encodeFunctionData({
+        abi: erc20Abi,
+        functionName: "transfer",
+        args: [ROOT.address, amount - 1n],
+      }),
+    } as const;
+
+    await expect(
+      validate(
+        {
+          ...request([call]),
+          deadline: deadline - 1n,
+          walletRecoveryAuthorization: {
+            ...authorizationBase,
+            signature,
+          },
+        },
+        client(),
+      ),
+    ).rejects.toThrow(/source or amount is not authorized/);
   });
 });

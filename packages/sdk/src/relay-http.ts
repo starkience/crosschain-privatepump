@@ -92,6 +92,16 @@ function relayRequestId(value: unknown): string | undefined {
 export function relayExecutionRequestJson(
   request: RelayExecutionRequest,
 ): Record<string, unknown> {
+  const walletRecoveryAuthorization = request.walletRecoveryAuthorization
+    ? {
+        ...request.walletRecoveryAuthorization,
+        accounts: request.walletRecoveryAuthorization.accounts.map((entry) => ({
+          ...entry,
+          amount: entry.amount.toString(),
+        })),
+        deadline: request.walletRecoveryAuthorization.deadline.toString(),
+      }
+    : undefined;
   return {
     ...request,
     calls: request.calls.map((call) => ({
@@ -102,6 +112,7 @@ export function relayExecutionRequestJson(
     deadline: request.deadline.toString(),
     prefund: request.prefund.toString(),
     fee: { ...request.fee, amount: request.fee.amount.toString() },
+    ...(walletRecoveryAuthorization ? { walletRecoveryAuthorization } : {}),
   };
 }
 

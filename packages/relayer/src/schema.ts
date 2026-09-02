@@ -3,6 +3,7 @@ import type {
   ExecutionCall,
   RelayExecutionRequest,
   RelayerFee,
+  WalletRecoveryAuthorization,
 } from "@private-launchpad/sdk";
 
 function record(value: unknown, field: string): Record<string, unknown> {
@@ -60,6 +61,9 @@ export function parseRelayRequest(value: unknown): RelayExecutionRequest {
   const relayQuoteAttestation = optionalRelayQuoteAttestation(
     input.relayQuoteAttestation,
   );
+  const walletRecoveryAuthorization = optionalWalletRecoveryAuthorization(
+    input.walletRecoveryAuthorization,
+  );
   return {
     chainId: safeNumber(input.chainId, "chainId"),
     factory: address(input.factory, "factory"),
@@ -74,12 +78,23 @@ export function parseRelayRequest(value: unknown): RelayExecutionRequest {
     signature: hex(input.signature, "signature"),
     ...(relayRequestId ? { relayRequestId } : {}),
     ...(relayQuoteAttestation ? { relayQuoteAttestation } : {}),
+    ...(walletRecoveryAuthorization ? { walletRecoveryAuthorization } : {}),
   };
 }
 
 export function relayRequestJson(
   request: RelayExecutionRequest,
 ): Record<string, unknown> {
+  const walletRecoveryAuthorization = request.walletRecoveryAuthorization
+    ? {
+        ...request.walletRecoveryAuthorization,
+        accounts: request.walletRecoveryAuthorization.accounts.map((entry) => ({
+          ...entry,
+          amount: entry.amount.toString(),
+        })),
+        deadline: request.walletRecoveryAuthorization.deadline.toString(),
+      }
+    : undefined;
   return {
     ...request,
     calls: request.calls.map((call) => ({
@@ -90,6 +105,60 @@ export function relayRequestJson(
     deadline: request.deadline.toString(),
     prefund: request.prefund.toString(),
     fee: { ...request.fee, amount: request.fee.amount.toString() },
+    ...(walletRecoveryAuthorization ? { walletRecoveryAuthorization } : {}),
+  };
+}
+
+function optionalWalletRecoveryAuthorization(
+  value: unknown,
+): WalletRecoveryAuthorization | undefined {
+  if (value === undefined) return undefined;
+  const input = record(value, "walletRecoveryAuthorization");
+  if (!Array.isArray(input.accounts) || input.accounts.length === 0) {
+    throw new Error(
+      "walletRecoveryAuthorization.accounts must be a non-empty array",
+    );
+  }
+  if (input.accounts.length > 20) {
+    throw new Error("wallet recovery authorizes too many accounts");
+  }
+  const accounts = input.accounts.map((raw, index) => {
+    const entry = record(raw, `walletRecoveryAuthorization.accounts[${index}]`);
+    return {
+      account: address(
+        entry.account,
+        `walletRecoveryAuthorization.accounts[${index}].account`,
+      ),
+      amount: uint(
+        entry.amount,
+        `walletRecoveryAuthorization.accounts[${index}].amount`,
+      ),
+    };
+  });
+  if (accounts.some((entry) => entry.amount <= 0n)) {
+    throw new Error("wallet recovery amounts must be positive");
+  }
+  if (
+    new Set(accounts.map((entry) => entry.account.toLowerCase())).size !==
+    accounts.length
+  ) {
+    throw new Error("wallet recovery contains a duplicate account");
+  }
+  const signature = hex(
+    input.signature,
+    "walletRecoveryAuthorization.signature",
+  );
+  if (!/^0x[0-9a-fA-F]{130}$/.test(signature)) {
+    throw new Error("wallet recovery signature must be 65 bytes");
+  }
+  return {
+    recipient: address(
+      input.recipient,
+      "walletRecoveryAuthorization.recipient",
+    ),
+    accounts,
+    deadline: uint(input.deadline, "walletRecoveryAuthorization.deadline"),
+    signature,
   };
 }
 
