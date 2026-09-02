@@ -1,5 +1,6 @@
 import {
   createRelayBridgeClient,
+  createRelayBatchReturnTransport,
   createRelayDepositTransport,
   createRelayFundingTransport,
   createRelayReturnTransport,
@@ -151,6 +152,10 @@ export async function createPonsMainnetLiveClient(
       relay: relayBridge,
     }),
     returnTransport: createRelayReturnTransport({
+      relay: relayBridge,
+      arbitrumRpcUrl,
+    }),
+    batchReturnTransport: createRelayBatchReturnTransport({
       relay: relayBridge,
       arbitrumRpcUrl,
     }),

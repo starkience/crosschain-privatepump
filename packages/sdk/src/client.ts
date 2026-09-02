@@ -15,6 +15,7 @@ import {
   type BridgeCashOutResult,
   type BridgeCashOutStepCallback,
   type BridgeReturnResult,
+  type BridgeBatchReturnResult,
   type BridgeStepCallback,
   type ExecutionCall,
   type LaunchpadAdapter,
@@ -341,6 +342,64 @@ export class PrivateLaunchpadClient {
         };
       },
       ...(args.onStep === undefined ? {} : { onStep: args.onStep }),
+    });
+  }
+
+  /** Returns several idle USDG balances through one shared private merge. */
+  async returnSessions(args: {
+    signature: string;
+    accountIndexes: readonly number[];
+    connectedEvmAddress: Address;
+    onStep?: BridgeStepCallback;
+  }): Promise<BridgeBatchReturnResult> {
+    if (!this.config.batchReturnTransport) {
+      throw new Error("batched private return is not configured");
+    }
+    const uniqueIndexes = [...new Set(args.accountIndexes)];
+    if (
+      uniqueIndexes.length === 0 ||
+      uniqueIndexes.some((index) => !Number.isSafeInteger(index) || index < 0)
+    ) {
+      throw new Error("batch return requires valid position account indexes");
+    }
+    const sources = [];
+    for (const accountIndex of uniqueIndexes) {
+      const session = await this.deriveSession(args.signature, accountIndex);
+      const amount = await this.config.publicClient.readContract({
+        address: this.config.usdc,
+        abi: erc20Abi,
+        functionName: "balanceOf",
+        args: [session.account],
+      });
+      if (amount <= 0n) continue;
+      sources.push({
+        session,
+        amount,
+        submitCalls: (
+          calls: readonly ExecutionCall[],
+          context?: {
+            relayRequestId?: string;
+            relayQuoteAttestation?: string;
+          },
+        ) =>
+          this.execute(args.signature, session, calls, {
+            ...(context?.relayRequestId
+              ? { relayRequestId: context.relayRequestId }
+              : {}),
+            ...(context?.relayQuoteAttestation
+              ? { relayQuoteAttestation: context.relayQuoteAttestation }
+              : {}),
+          }),
+        waitForExecution: (transactionHash: Hash) =>
+          this.waitForExecution(transactionHash),
+      });
+    }
+    return this.config.batchReturnTransport({
+      bridge: this.config.bridge,
+      signature: args.signature,
+      connectedEvmAddress: args.connectedEvmAddress,
+      sources,
+      ...(args.onStep ? { onStep: args.onStep } : {}),
     });
   }
 

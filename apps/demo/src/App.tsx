@@ -1213,6 +1213,11 @@ export function App({ runtime }: AppProps) {
     [activePosition, portfolioSnapshots, token, tradeAmount, tradeSide],
   );
   const busy = !["idle", "complete"].includes(stage);
+  const unusedReturnPositions = positions.filter((position) =>
+    ["buy-failed", "failed", "return-failed", "returning"].includes(
+      position.status,
+    ),
+  );
   const privateBalanceAvailable =
     privateBalance > restingPrivateBalance
       ? privateBalance - restingPrivateBalance
@@ -2758,6 +2763,42 @@ export function App({ runtime }: AppProps) {
     await returnPosition(activePosition);
   }
 
+  async function returnAllUnusedFunds() {
+    if (!connectedWallet || busy || unusedReturnPositions.length === 0) return;
+    setError(undefined);
+    setReturnResult(undefined);
+    const candidates = [...unusedReturnPositions];
+    try {
+      await prepareFreshIdentity(0);
+      for (const position of candidates) {
+        patchPosition(connectedWallet, position.id, { status: "returning" });
+      }
+      setStage("returning");
+      const returned = await runtime.returnMultipleToPool(
+        candidates.map((position) => position.accountIndex),
+      );
+      setReturnResult(returned);
+      setPrivateBalance((balance) => balance + returned.amountReturned);
+      for (const position of candidates) {
+        patchPosition(connectedWallet, position.id, {
+          status: "closed",
+          lastError: undefined,
+        });
+      }
+      setStage("complete");
+    } catch (reason) {
+      const message = errorMessage(reason);
+      for (const position of candidates) {
+        patchPosition(connectedWallet, position.id, {
+          status: "return-failed",
+          lastError: message,
+        });
+      }
+      setStage("complete");
+      setError(message);
+    }
+  }
+
   async function retryPositionBuy(position: PrivatePosition) {
     if (!connectedWallet || !position.token || busy) return;
     setActivePositionId(position.id);
@@ -4246,6 +4287,21 @@ export function App({ runtime }: AppProps) {
                     <i /> Robinhood mainnet
                   </span>
                   <div className="portfolio-masthead-buttons">
+                    <button
+                      type="button"
+                      className="portfolio-refresh portfolio-recover"
+                      disabled={
+                        !connectedWallet ||
+                        busy ||
+                        unusedReturnPositions.length === 0
+                      }
+                      onClick={() => void returnAllUnusedFunds()}
+                    >
+                      <ShieldCheckIcon size={13} aria-hidden="true" />
+                      {stage === "returning"
+                        ? "Returning all…"
+                        : `Return all unused (${unusedReturnPositions.length})`}
+                    </button>
                     {runtime.recoverPositions && (
                       <button
                         type="button"

@@ -3,6 +3,7 @@ import type { Address } from "viem";
 import {
   ARBITRUM_NATIVE_USDC,
   ROBINHOOD_USDG,
+  createRelayBatchReturnTransport,
   createRelayBridgeClient,
   createRelayFundingTransport,
   createRelayReturnTransport,
@@ -187,6 +188,21 @@ describe("Relay cross-chain bridge", () => {
     });
   });
 
+  it("can omit repeated destination gas top-ups", async () => {
+    const doFetch = vi.fn(async () => json(reverseQuote()));
+    const client = createRelayBridgeClient({ fetch: doFetch });
+    await client.quoteRobinhoodUsdgToArbitrumUsdc({
+      user: CONNECTED,
+      recipient: OWNER,
+      refundTo: CONNECTED,
+      amount: 30_000_000n,
+      topupGas: false,
+    });
+    const request = JSON.parse(String(doFetch.mock.calls[0]![1]?.body));
+    expect(request).not.toHaveProperty("topupGas");
+    expect(request).not.toHaveProperty("topupGasAmount");
+  });
+
   it("domain-separates the private S2 return identity by position", () => {
     const root = "0x1234";
     const first = derivePrivateReturnSignature(root, 1);
@@ -260,6 +276,114 @@ describe("Relay cross-chain bridge", () => {
       ],
       { relayRequestId, relayQuoteAttestation },
     );
+  });
+
+  it("shares one destination gas top-up across a multi-account return", async () => {
+    const secondAccount =
+      "0x5555555555555555555555555555555555555555" as Address;
+    let usdcRead = 0;
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (_url: string, init?: RequestInit) => {
+        const body = JSON.parse(String(init?.body)) as { method: string };
+        if (body.method === "eth_getBalance") {
+          return json({ jsonrpc: "2.0", id: 1, result: "0x0" });
+        }
+        if (body.method === "eth_call") {
+          usdcRead += 1;
+          return json({
+            jsonrpc: "2.0",
+            id: 1,
+            result: usdcRead === 1 ? "0x0" : "0x1e8480",
+          });
+        }
+        throw new Error(`unexpected RPC method ${body.method}`);
+      }),
+    );
+    const quoteReturn = vi.fn(
+      async (args: { user: Address; amount: bigint; topupGas?: boolean }) => ({
+        requestId: `0x${"cd".repeat(32)}`,
+        quoteAttestation: "v1.payload.signature",
+        inputAmount: args.amount,
+        outputAmount: args.amount,
+        minimumOutputAmount: args.amount - 1n,
+        depositAddress: DEPOSIT,
+        depositTransaction: {
+          chainId: 4663,
+          from: args.user,
+          to: ROBINHOOD_USDG,
+          data: transferData(DEPOSIT, args.amount),
+          value: "0x0" as const,
+        },
+      }),
+    );
+    const secondSubmit = vi.fn(async () => {
+      throw new Error("stop on second source");
+    });
+    const transport = createRelayBatchReturnTransport({
+      arbitrumRpcUrl: "https://arb.test",
+      relay: {
+        quoteRobinhoodUsdgToArbitrumUsdc: quoteReturn,
+        quoteArbitrumUsdcToRobinhoodUsdg: vi.fn(),
+        getStatus: vi.fn(),
+        waitForSuccess: vi.fn(async () => ({
+          status: "success",
+          terminal: true,
+          succeeded: true,
+        })),
+      },
+    });
+    const bridge = {
+      deriveStarknetAddress: vi.fn(() => "0x1234"),
+      sendPrivateToStarknet: vi.fn(),
+      deriveEvmOwner: vi.fn(() => ({
+        address: OWNER,
+        privateKey: `0x${"12".repeat(32)}`,
+      })),
+    } as unknown as PrivacyBridgeEngine;
+    const confirmed = vi.fn(async () => ({
+      transactionHash: DESTINATION_TX as `0x${string}`,
+      status: "success" as const,
+      blockNumber: 1n,
+    }));
+
+    await expect(
+      transport({
+        bridge,
+        signature: `0x${"34".repeat(65)}`,
+        connectedEvmAddress: CONNECTED,
+        sources: [
+          {
+            session: {
+              owner: OWNER,
+              account: ACCOUNT,
+              accountIndex: 1,
+              channel: "pons-private-v1",
+            },
+            amount: 2_000_000n,
+            submitCalls: vi.fn(async () => DESTINATION_TX as `0x${string}`),
+            waitForExecution: confirmed,
+          },
+          {
+            session: {
+              owner: CONNECTED,
+              account: secondAccount,
+              accountIndex: 2,
+              channel: "pons-private-v1",
+            },
+            amount: 1_000_000n,
+            submitCalls: secondSubmit,
+            waitForExecution: confirmed,
+          },
+        ],
+      }),
+    ).rejects.toThrow(/stop on second source/);
+    expect(quoteReturn.mock.calls.map(([args]) => args.topupGas)).toEqual([
+      true,
+      false,
+    ]);
+    expect(secondSubmit).toHaveBeenCalledOnce();
+    vi.unstubAllGlobals();
   });
 
   it("keeps small returned positions recoverable when Relay fees are too high", async () => {

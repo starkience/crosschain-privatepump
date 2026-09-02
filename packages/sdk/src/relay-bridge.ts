@@ -15,6 +15,7 @@ import type {
   BridgeFundResult,
   CctpForwardFeeQuote,
   PrivateDepositTransport,
+  SessionBatchReturnTransport,
   SessionFundingTransport,
   SessionReturnTransport,
 } from "./types.js";
@@ -80,6 +81,7 @@ export interface RelayBridgeClient {
     refundTo: Address;
     amount: bigint;
     slippageBps?: number;
+    topupGas?: boolean;
     topupGasAmount?: bigint;
   }): Promise<RelayBridgeQuote>;
   getStatus(requestId: string): Promise<RelayBridgeStatus>;
@@ -160,6 +162,7 @@ export function createRelayBridgeClient(
     },
 
     quoteRobinhoodUsdgToArbitrumUsdc(args) {
+      const topupGas = args.topupGas ?? true;
       return quoteStrictDepositRoute(doFetch, endpoint, {
         user: getAddress(args.user),
         originChainId: ROBINHOOD_CHAIN_ID,
@@ -173,8 +176,12 @@ export function createRelayBridgeClient(
         refundTo: getAddress(args.refundTo),
         slippageTolerance: String(args.slippageBps ?? 100),
         strict: true,
-        topupGas: true,
-        topupGasAmount: (args.topupGasAmount ?? 250_000n).toString(),
+        ...(topupGas
+          ? {
+              topupGas: true,
+              topupGasAmount: (args.topupGasAmount ?? 250_000n).toString(),
+            }
+          : {}),
       });
     },
 
@@ -443,6 +450,171 @@ export function createRelayReturnTransport(
       claimTxHash: merged.txHash,
       ranFreshBurn: true,
       alreadyClaimed: false,
+    };
+  };
+}
+
+/**
+ * Returns several idle position balances through one isolated Arbitrum/S2
+ * identity. Each Robinhood transfer still uses its own authenticated Relay
+ * quote, while the gas top-up, STRK20 deposit, and private merge are shared.
+ */
+export function createRelayBatchReturnTransport(
+  options: RelayReturnTransportOptions,
+): SessionBatchReturnTransport {
+  const arbitrumRpcUrl = options.arbitrumRpcUrl ?? "/arbitrum-rpc";
+  const feeBuffer =
+    options.privateTransferFeeBuffer ?? DEFAULT_PRIVATE_TRANSFER_FEE_BUFFER;
+
+  return async (args) => {
+    if (
+      !args.bridge.deriveStarknetAddress ||
+      !args.bridge.sendPrivateToStarknet
+    ) {
+      throw new Error(
+        "official privacy bridge build lacks the private S2 return exports",
+      );
+    }
+    const sources = [...args.sources]
+      .filter((source) => source.amount > 0n)
+      .sort((left, right) =>
+        left.amount === right.amount ? 0 : left.amount > right.amount ? -1 : 1,
+      );
+    const indexes = new Set<number>();
+    for (const source of sources) {
+      if (indexes.has(source.session.accountIndex)) {
+        throw new Error("batch return contains a duplicate position account");
+      }
+      indexes.add(source.session.accountIndex);
+    }
+
+    const s2Signature = derivePrivateReturnSignature(args.signature as Hex, 0);
+    const staging = args.bridge.deriveEvmOwner(
+      s2Signature,
+      0,
+      "pons-return-batch-staging-v1",
+    );
+    const localProvider = createDerivedEip1193Provider({
+      privateKey: staging.privateKey,
+      rpcUrl: arbitrumRpcUrl,
+    });
+    let delivered = await readUsdcBalance(localProvider, staging.address);
+    let needsGasTopup =
+      (await readNativeBalance(localProvider, staging.address)) === 0n;
+    const sourceAccountIndexes: number[] = [];
+
+    for (const [index, source] of sources.entries()) {
+      args.onStep?.(
+        "relay-return",
+        "running",
+        `routing idle USDG account ${index + 1} of ${sources.length}`,
+      );
+      let quote: RelayBridgeQuote;
+      try {
+        quote = await options.relay.quoteRobinhoodUsdgToArbitrumUsdc({
+          user: source.session.account,
+          recipient: staging.address,
+          refundTo: source.session.owner,
+          amount: source.amount,
+          topupGas: needsGasTopup,
+        });
+      } catch (error) {
+        if (isRelayAmountTooLow(error)) {
+          throw new Error(
+            `Relay cannot batch-return ${formatSixDecimalAmount(source.amount)} USDG from position account ${source.session.accountIndex} at current fees. No transfer was submitted for this account.`,
+            { cause: error },
+          );
+        }
+        throw error;
+      }
+      if (BigInt(quote.depositTransaction.value) !== 0n) {
+        throw new Error(
+          "Relay batch return unexpectedly requires native value",
+        );
+      }
+      const sourceTx = await source.submitCalls(
+        [
+          {
+            target: quote.depositTransaction.to,
+            value: 0n,
+            data: quote.depositTransaction.data,
+          },
+        ],
+        {
+          relayRequestId: quote.requestId,
+          relayQuoteAttestation: requiredQuoteAttestation(quote),
+        },
+      );
+      const confirmation = await source.waitForExecution(sourceTx);
+      if (confirmation.status !== "success") {
+        throw new Error("Robinhood Relay batch deposit reverted");
+      }
+      await options.relay.waitForSuccess(quote.requestId, (status) =>
+        args.onStep?.(
+          "relay-return",
+          status.succeeded ? "done" : "running",
+          `${index + 1}/${sources.length}: ${status.status}`,
+        ),
+      );
+      const nextBalance = await readUsdcBalance(localProvider, staging.address);
+      if (nextBalance < delivered + quote.minimumOutputAmount) {
+        throw new Error(
+          "Relay batch return delivered less Arbitrum USDC than quoted",
+        );
+      }
+      delivered = nextBalance;
+      needsGasTopup = false;
+      sourceAccountIndexes.push(source.session.accountIndex);
+    }
+
+    if (delivered <= feeBuffer) {
+      throw new Error(
+        `The shared return account holds only ${formatSixDecimalAmount(delivered)} USDC; more than ${formatSixDecimalAmount(feeBuffer)} USDC is required for the final private merge. Funds remain recoverable in their current accounts.`,
+      );
+    }
+    args.onStep?.(
+      "s2-deposit",
+      "running",
+      "depositing the combined return through one isolated S2 identity",
+    );
+    const deposited = await args.bridge.moveIntoPool({
+      signature: s2Signature,
+      funding: "metamask",
+      amountWei: delivered,
+      provider: localProvider,
+      sourceChainId: ARBITRUM_CHAIN_ID,
+    });
+    if (!deposited.deposited || deposited.depositedNetWei <= feeBuffer) {
+      throw new Error(
+        "S2 did not receive enough combined private balance to complete the return",
+      );
+    }
+
+    const recipient = args.bridge.deriveStarknetAddress(args.signature);
+    const amountReturned = deposited.depositedNetWei - feeBuffer;
+    args.onStep?.(
+      "private-merge",
+      "running",
+      "privately merging the combined S2 balance into the main balance",
+    );
+    const merged = await args.bridge.sendPrivateToStarknet({
+      signature: s2Signature,
+      amount: amountReturned,
+      recipient,
+      onStatus: (detail) => args.onStep?.("private-merge", "running", detail),
+    });
+    if (!merged.confirmed) {
+      throw new Error(
+        `private combined S2 merge was submitted but not confirmed: ${merged.txHash}`,
+      );
+    }
+    args.onStep?.("private-merge", "done", merged.txHash);
+    return {
+      amountReturned,
+      claimTxHash: merged.txHash,
+      ranFreshBurn: true,
+      alreadyClaimed: false,
+      sourceAccountIndexes,
     };
   };
 }
@@ -870,6 +1042,20 @@ async function readUsdcBalance(
   });
   if (typeof result !== "string" || !/^0x[0-9a-fA-F]+$/.test(result)) {
     throw new Error("Arbitrum USDC balance returned invalid data");
+  }
+  return BigInt(result);
+}
+
+async function readNativeBalance(
+  provider: Eip1193Provider,
+  account: Address,
+): Promise<bigint> {
+  const result = await provider.request({
+    method: "eth_getBalance",
+    params: [account, "latest"],
+  });
+  if (typeof result !== "string" || !/^0x[0-9a-fA-F]+$/.test(result)) {
+    throw new Error("Arbitrum native balance returned invalid data");
   }
   return BigInt(result);
 }

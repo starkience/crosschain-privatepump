@@ -5,6 +5,7 @@ import {
   type BridgeCashOutResult,
   type BridgeCashOutStepCallback,
   type BridgeFundResult,
+  type BridgeBatchReturnResult,
   type BridgeReturnResult,
   type BridgeStepCallback,
   type Eip1193Provider,
@@ -121,6 +122,10 @@ export interface LaunchpadRuntime {
     draft: TradeDraft,
   ): Promise<RuntimeTradeQuote>;
   returnToPool(onStep?: BridgeStepCallback): Promise<BridgeReturnResult>;
+  returnMultipleToPool(
+    accountIndexes: readonly number[],
+    onStep?: BridgeStepCallback,
+  ): Promise<BridgeBatchReturnResult>;
   reset(): void;
 }
 
@@ -465,6 +470,15 @@ export function createLiveRuntime<
         ...(onStep ? { onStep } : {}),
       });
     },
+    async returnMultipleToPool(accountIndexes, onStep) {
+      const identity = requireIdentity();
+      return config.client.returnSessions({
+        signature: identity.identitySignature,
+        accountIndexes,
+        connectedEvmAddress: identity.connectedAddress,
+        ...(onStep ? { onStep } : {}),
+      });
+    },
     reset() {
       identitySignature = undefined;
       session = undefined;
@@ -647,6 +661,17 @@ export function createDemoRuntime(): LaunchpadRuntime {
         claimTxHash: sampleHash("claim"),
         ranFreshBurn: true,
         alreadyClaimed: false,
+      };
+    },
+    async returnMultipleToPool(accountIndexes, onStep) {
+      if (!prepared) throw new Error("demo identity is not prepared");
+      await demoSteps(["relay-return", "s2-deposit", "private-merge"], onStep);
+      return {
+        amountReturned: 24_200_000n,
+        claimTxHash: sampleHash("batch-claim"),
+        ranFreshBurn: true,
+        alreadyClaimed: false,
+        sourceAccountIndexes: accountIndexes,
       };
     },
     reset() {

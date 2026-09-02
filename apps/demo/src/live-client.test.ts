@@ -103,6 +103,7 @@ describe("PrivatePons mainnet live client", () => {
     );
     expect(client.config.fundingTransport).toBeTypeOf("function");
     expect(client.config.depositTransport).toBeTypeOf("function");
+    expect(client.config.batchReturnTransport).toBeTypeOf("function");
     expect(client.channel).toBe("pons-private-v1");
     expect(loadBridge).toHaveBeenCalledWith({
       environment: ponsEnvironment,

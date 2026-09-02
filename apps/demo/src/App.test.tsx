@@ -110,6 +110,13 @@ function fixture(
       ranFreshBurn: true,
       alreadyClaimed: false,
     })),
+    returnMultipleToPool: vi.fn(async (accountIndexes) => ({
+      amountReturned: 24_200_000n,
+      claimTxHash: "0xbatch-claim",
+      ranFreshBurn: true,
+      alreadyClaimed: false,
+      sourceAccountIndexes: accountIndexes,
+    })),
     reset: vi.fn(),
     ...overrides,
   };
@@ -1100,5 +1107,58 @@ describe("Plank interface", () => {
       }),
     );
     expect(recoverPositions).not.toHaveBeenCalled();
+  });
+
+  it("returns all failed-account USDG through the batched recovery action", async () => {
+    const scope = `0x${"aa".repeat(32)}`;
+    const key = `privatepons-private-positions-v2:8453:${scope}`;
+    localStorage.setItem(
+      key,
+      JSON.stringify({
+        version: 1,
+        positions: [
+          {
+            id: "failed-one",
+            kind: "trade",
+            name: "Failed one",
+            symbol: "ONE",
+            accountIndex: 11,
+            account: "0x1111111111111111111111111111111111111112",
+            status: "return-failed",
+            usdcCommitted: "2000000",
+            createdAt: 1,
+            updatedAt: 2,
+          },
+          {
+            id: "failed-two",
+            kind: "trade",
+            name: "Failed two",
+            symbol: "TWO",
+            accountIndex: 12,
+            account: "0x1111111111111111111111111111111111111113",
+            status: "buy-failed",
+            usdcCommitted: "1000000",
+            createdAt: 1,
+            updatedAt: 2,
+          },
+        ],
+      }),
+    );
+    const runtime = fixture("live");
+    fireEvent.click(screen.getByRole("button", { name: /connect metamask/i }));
+    await screen.findByRole("button", { name: /metamask connected/i });
+    fireEvent.click(screen.getByRole("button", { name: /^back$/i }));
+    fireEvent.click(screen.getByRole("button", { name: /positions/i }));
+    fireEvent.click(
+      await screen.findByRole("button", { name: /return all unused \(2\)/i }),
+    );
+
+    await waitFor(() =>
+      expect(runtime.returnMultipleToPool).toHaveBeenCalledWith([11, 12]),
+    );
+    await waitFor(() => {
+      const stored = localStorage.getItem(key) ?? "";
+      expect(stored.match(/\"status\":\"closed\"/g)).toHaveLength(2);
+    });
   });
 });

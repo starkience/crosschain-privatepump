@@ -88,6 +88,8 @@ export interface PrivateLaunchpadClientConfig {
   fundingTransport?: SessionFundingTransport;
   /** Optional execution-chain return route used instead of native CCTP return. */
   returnTransport?: SessionReturnTransport;
+  /** Optional batched return route that shares one isolated destination. */
+  batchReturnTransport?: SessionBatchReturnTransport;
   channel?: string;
 }
 
@@ -216,11 +218,40 @@ export type SessionReturnTransport = (
   args: SessionReturnTransportArgs,
 ) => Promise<BridgeReturnResult>;
 
+export interface SessionBatchReturnSource {
+  session: PrivateLaunchpadSession;
+  amount: bigint;
+  submitCalls(
+    calls: readonly ExecutionCall[],
+    context?: {
+      relayRequestId?: string;
+      relayQuoteAttestation?: string;
+    },
+  ): Promise<Hash>;
+  waitForExecution(transactionHash: Hash): Promise<ExecutionConfirmation>;
+}
+
+export interface SessionBatchReturnTransportArgs {
+  bridge: PrivacyBridgeEngine;
+  signature: string;
+  connectedEvmAddress: Address;
+  sources: readonly SessionBatchReturnSource[];
+  onStep?: BridgeStepCallback;
+}
+
+export type SessionBatchReturnTransport = (
+  args: SessionBatchReturnTransportArgs,
+) => Promise<BridgeBatchReturnResult>;
+
 export interface BridgeReturnResult {
   amountReturned: bigint;
   claimTxHash: string;
   ranFreshBurn: boolean;
   alreadyClaimed: boolean;
+}
+
+export interface BridgeBatchReturnResult extends BridgeReturnResult {
+  sourceAccountIndexes: readonly number[];
 }
 
 export interface PrivacyBridgeEngine {
