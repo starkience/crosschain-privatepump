@@ -33,7 +33,11 @@ const BASE_ENV = {
   RELAYER_PRIVATE_KEY: RELAYER_KEY,
 } satisfies NodeJS.ProcessEnv;
 
-async function signedRequest(): Promise<RelayExecutionRequest> {
+async function signedRequest(
+  calls: RelayExecutionRequest["calls"] = [
+    { target: TARGET, value: 0n, data: "0x1234" as Hex },
+  ],
+): Promise<RelayExecutionRequest> {
   const owner = privateKeyToAccount(OWNER_KEY).address;
   const request = {
     chainId: 84532,
@@ -41,7 +45,7 @@ async function signedRequest(): Promise<RelayExecutionRequest> {
     account: ACCOUNT,
     owner,
     accountIndex: 4,
-    calls: [{ target: TARGET, value: 0n, data: "0x1234" as Hex }],
+    calls,
     nonce: 0n,
     deadline: BigInt(Math.floor(Date.now() / 1000) + 300),
     prefund: 0n,
@@ -53,9 +57,23 @@ async function signedRequest(): Promise<RelayExecutionRequest> {
   };
 }
 
-function fixture(accountNonce?: bigint, relayerGasBalance = 1n) {
-  const simulateContract = vi.fn(async (request: unknown) => ({ request }));
+function fixture(
+  accountNonce?: bigint,
+  relayerGasBalance = 1n,
+  options: {
+    tokenBalances?: bigint[];
+    simulationErrors?: Error[];
+  } = {},
+) {
+  const tokenBalances = [...(options.tokenBalances ?? [])];
+  const simulationErrors = [...(options.simulationErrors ?? [])];
+  const simulateContract = vi.fn(async (request: unknown) => {
+    const error = simulationErrors.shift();
+    if (error) throw error;
+    return { request };
+  });
   const writeContract = vi.fn(async () => TX_HASH);
+  const sleep = vi.fn(async () => undefined);
   const publicClient = {
     getBalance: vi.fn(async () => relayerGasBalance),
     getBytecode: vi.fn(async () =>
@@ -64,6 +82,9 @@ function fixture(accountNonce?: bigint, relayerGasBalance = 1n) {
     readContract: vi.fn(async (args: { functionName: string }) => {
       if (args.functionName === "computeAddress") return ACCOUNT;
       if (args.functionName === "nonce") return accountNonce;
+      if (args.functionName === "balanceOf") {
+        return tokenBalances.shift() ?? 0n;
+      }
       throw new Error(`unexpected read: ${args.functionName}`);
     }),
     simulateContract,
@@ -81,9 +102,9 @@ function fixture(accountNonce?: bigint, relayerGasBalance = 1n) {
       maxPrefund: 0n,
       allowedTargets: new Set([TARGET.toLowerCase()]),
     },
-    { publicClient, walletClient, relayerAccount },
+    { publicClient, walletClient, relayerAccount, sleep },
   );
-  return { relayer, simulateContract, writeContract };
+  return { relayer, simulateContract, writeContract, sleep };
 }
 
 describe("private launchpad relayer", () => {
@@ -113,6 +134,75 @@ describe("private launchpad relayer", () => {
     );
     expect(simulateContract).toHaveBeenCalledOnce();
     expect(writeContract).not.toHaveBeenCalled();
+  });
+
+  it("waits until a just-funded execution account exposes the approved spend", async () => {
+    const request = await signedRequest([
+      {
+        target: TARGET,
+        value: 0n,
+        data: encodeFunctionData({
+          abi: erc20Abi,
+          functionName: "approve",
+          args: [FACTORY, 10n],
+        }),
+      },
+    ]);
+    const { relayer, simulateContract, sleep } = fixture(undefined, 1n, {
+      tokenBalances: [0n, 4n, 10n],
+    });
+
+    await expect(relayer.relay(request)).resolves.toBe(TX_HASH);
+    expect(sleep).toHaveBeenCalledTimes(2);
+    expect(simulateContract).toHaveBeenCalledOnce();
+  });
+
+  it("does not simulate when fresh-account funding is still missing", async () => {
+    const request = await signedRequest([
+      {
+        target: TARGET,
+        value: 0n,
+        data: encodeFunctionData({
+          abi: erc20Abi,
+          functionName: "approve",
+          args: [FACTORY, 10n],
+        }),
+      },
+    ]);
+    const { relayer, simulateContract, sleep } = fixture(undefined, 1n, {
+      tokenBalances: [0n, 0n, 0n, 0n, 0n, 0n],
+    });
+
+    await expect(relayer.relay(request)).rejects.toThrow(
+      /funding is not visible.*available 0, required 10/i,
+    );
+    expect(sleep).toHaveBeenCalledTimes(5);
+    expect(simulateContract).not.toHaveBeenCalled();
+  });
+
+  it("retries an opaque pre-broadcast revert for a just-funded account", async () => {
+    const request = await signedRequest([
+      {
+        target: TARGET,
+        value: 0n,
+        data: encodeFunctionData({
+          abi: erc20Abi,
+          functionName: "approve",
+          args: [FACTORY, 10n],
+        }),
+      },
+    ]);
+    const { relayer, simulateContract, sleep } = fixture(undefined, 1n, {
+      tokenBalances: [10n],
+      simulationErrors: [
+        new Error('The contract function "deployAndExecute" reverted.'),
+        new Error('The contract function "deployAndExecute" reverted.'),
+      ],
+    });
+
+    await expect(relayer.relay(request)).resolves.toBe(TX_HASH);
+    expect(simulateContract).toHaveBeenCalledTimes(3);
+    expect(sleep).toHaveBeenCalledTimes(2);
   });
 });
 

@@ -700,6 +700,12 @@ function errorMessage(error: unknown): string {
   ) {
     return "The policy relayer rejected authentication before broadcast. No buy transaction was created and the USDC remains in the fresh account.";
   }
+  if (
+    /relayer rejected execution with status 400/i.test(message) &&
+    /funding is not visible|ERC20InsufficientBalance/i.test(message)
+  ) {
+    return `The policy relayer has not caught up with the fresh-account USDG yet. No Robinhood transaction was created and the USDG remains in the same fresh account. Wait a moment, then use Retry buy; do not deposit or bridge again.${requestSuffix}`;
+  }
   if (/relayer rejected execution with status 400/i.test(message)) {
     const detail = boundedRelayerDetail(message);
     return `The policy relayer rejected this private execution before broadcast${

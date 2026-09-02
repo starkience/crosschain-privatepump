@@ -49,7 +49,13 @@ export interface RelayerDependencies {
   publicClient: PublicClient;
   walletClient: WalletClient;
   relayerAccount: ReturnType<typeof privateKeyToAccount>;
+  sleep?: (milliseconds: number) => Promise<void>;
 }
+
+const EXECUTION_STATE_ATTEMPTS = 6;
+const EXECUTION_STATE_RETRY_MS = 750;
+const SIMULATION_ATTEMPTS = 4;
+const SIMULATION_RETRY_BASE_MS = 500;
 
 export function validateStaticPolicy(
   request: RelayExecutionRequest,
@@ -102,6 +108,7 @@ export class PrivateLaunchpadRelayer {
   async relay(request: RelayExecutionRequest): Promise<Hash> {
     validateStaticPolicy(request, this.policy);
     const { publicClient, walletClient, relayerAccount } = this.dependencies;
+    const sleep = this.dependencies.sleep ?? delay;
 
     const predicted = await publicClient.readContract({
       address: this.policy.factory,
@@ -133,7 +140,8 @@ export class PrivateLaunchpadRelayer {
     await this.policy.semanticValidator?.(request, publicClient);
 
     const code = await publicClient.getBytecode({ address: request.account });
-    const currentNonce = code
+    const accountDeployed = !!code && code !== "0x";
+    const currentNonce = accountDeployed
       ? await publicClient.readContract({
           address: request.account,
           abi: privateLaunchpadAccountAbi,
@@ -141,6 +149,16 @@ export class PrivateLaunchpadRelayer {
         })
       : 0n;
     if (currentNonce !== request.nonce) throw new Error("stale account nonce");
+
+    const approvedSpend = exactApprovedSpend(request);
+    if (!accountDeployed && approvedSpend) {
+      await waitForApprovedSpendBalance(
+        publicClient,
+        request.account,
+        approvedSpend,
+        sleep,
+      );
+    }
 
     const parameters = {
       account: relayerAccount,
@@ -160,7 +178,11 @@ export class PrivateLaunchpadRelayer {
       ] as const,
       value: request.prefund,
     };
-    const simulation = await publicClient.simulateContract(parameters);
+    const simulation = await simulateWithFreshStateRetry(
+      () => publicClient.simulateContract(parameters),
+      !accountDeployed && approvedSpend !== undefined,
+      sleep,
+    );
 
     // eth_call-based simulation does not require the sender to own native gas,
     // so a completely empty relayer can otherwise pass every policy and
@@ -176,6 +198,90 @@ export class PrivateLaunchpadRelayer {
     }
     return walletClient.writeContract(simulation.request);
   }
+}
+
+interface ApprovedSpend {
+  readonly token: Address;
+  readonly amount: bigint;
+}
+
+function exactApprovedSpend(
+  request: RelayExecutionRequest,
+): ApprovedSpend | undefined {
+  const firstCall = request.calls[0];
+  if (!firstCall || firstCall.value !== 0n) return undefined;
+  try {
+    const decoded = decodeFunctionData({ abi: erc20Abi, data: firstCall.data });
+    if (decoded.functionName !== "approve" || decoded.args[1] <= 0n) {
+      return undefined;
+    }
+    return { token: getAddress(firstCall.target), amount: decoded.args[1] };
+  } catch {
+    return undefined;
+  }
+}
+
+async function waitForApprovedSpendBalance(
+  publicClient: PublicClient,
+  account: Address,
+  spend: ApprovedSpend,
+  sleep: (milliseconds: number) => Promise<void>,
+): Promise<void> {
+  let visibleBalance = 0n;
+  let lastReadError: unknown;
+  for (let attempt = 0; attempt < EXECUTION_STATE_ATTEMPTS; attempt += 1) {
+    try {
+      visibleBalance = await publicClient.readContract({
+        address: spend.token,
+        abi: erc20Abi,
+        functionName: "balanceOf",
+        args: [account],
+      });
+      lastReadError = undefined;
+      if (visibleBalance >= spend.amount) return;
+    } catch (error) {
+      lastReadError = error;
+    }
+    if (attempt + 1 < EXECUTION_STATE_ATTEMPTS) {
+      await sleep(EXECUTION_STATE_RETRY_MS);
+    }
+  }
+  if (lastReadError) throw lastReadError;
+  throw new Error(
+    `execution account funding is not visible to the relayer yet: available ${visibleBalance}, required ${spend.amount}`,
+  );
+}
+
+async function simulateWithFreshStateRetry<T>(
+  simulate: () => Promise<T>,
+  retryFreshState: boolean,
+  sleep: (milliseconds: number) => Promise<void>,
+): Promise<T> {
+  for (let attempt = 0; ; attempt += 1) {
+    try {
+      return await simulate();
+    } catch (error) {
+      if (
+        !retryFreshState ||
+        attempt + 1 >= SIMULATION_ATTEMPTS ||
+        !isRetryablePreBroadcastSimulation(error)
+      ) {
+        throw error;
+      }
+      await sleep(SIMULATION_RETRY_BASE_MS * 2 ** attempt);
+    }
+  }
+}
+
+function isRetryablePreBroadcastSimulation(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error);
+  return /deployAndExecute.*revert|execution reverted|unknown reason|too many requests|\b429\b|rate[ -]?limit|\b50[234]\b|timed? ?out/i.test(
+    message,
+  );
+}
+
+function delay(milliseconds: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, milliseconds));
 }
 
 export function relayerFromEnv(

@@ -19,6 +19,10 @@ interface IPonsV2CurveFork {
     function sell(uint256 tokensIn, uint256 minQuoteOut, address recipient)
         external
         returns (uint256 quoteOut);
+    function getReserves() external view returns (uint256 quoteReserve, uint256 tokenReserve);
+    function feeBps() external view returns (uint256);
+    function creatorTaxBps() external view returns (uint256);
+    function currentSnipeTaxBps(address recipient) external view returns (uint256);
 }
 
 interface IPonsV2FactoryFork {
@@ -86,9 +90,12 @@ contract PonsV2ForkTest is Test {
     uint256 internal constant ACCOUNT_INDEX = 23;
     uint256 internal constant USDG_BUDGET = 100e6;
     uint256 internal constant BUY_AMOUNT = 10e6;
+    uint256 internal constant RELAY_DELIVERED_BUY_AMOUNT = 1_764_547;
 
     address internal constant PONS_FACTORY = 0x7eD598BcEf8bd9Edd8C97A195C6d13f40801EC7e;
     address internal constant USDG = 0x5fc5360D0400a0Fd4f2af552ADD042D716F1d168;
+    address internal constant PONS_DONATE = 0xD4f1C2Fb5eD5Ab256d41fefeC00fd40Dce6B7c86;
+    address internal constant PRIVATE_ACCOUNT_FACTORY = 0x2f04549436Aeb3693E849E6C8121CA901edF7Ce4;
 
     PrivateLaunchpadAccountFactory internal accountFactory;
     PrivateLaunchpadAccount internal account;
@@ -120,6 +127,57 @@ contract PonsV2ForkTest is Test {
         uint256 tokensOut = _buy();
         _sell(tokensOut);
         assertEq(account.nonce(), 3);
+    }
+
+    function testCounterfactualAccountBuysPonsDonateWithRelayDeliveredAmount() external {
+        if (PONS_FACTORY.code.length == 0) return;
+
+        owner = vm.addr(OWNER_KEY);
+        relayer = makeAddr("pons-relayer");
+        accountFactory = PrivateLaunchpadAccountFactory(PRIVATE_ACCOUNT_FACTORY);
+        predicted = accountFactory.computeAddress(owner, ACCOUNT_INDEX);
+        deadline = block.timestamp + 15 minutes;
+
+        IPonsV2FactoryFork.LaunchedToken memory launch = pons.getLaunchedToken(PONS_DONATE);
+        assertTrue(launch.exists, "PonsDonate must remain registered");
+        assertEq(launch.phase, 0, "PonsDonate must remain on its curve");
+        curve = launch.curve;
+
+        deal(USDG, predicted, RELAY_DELIVERED_BUY_AMOUNT, true);
+        IPrivateLaunchpadAccount.Call[] memory buyCalls = new IPrivateLaunchpadAccount.Call[](2);
+        buyCalls[0] = IPrivateLaunchpadAccount.Call({
+            target: USDG,
+            value: 0,
+            data: abi.encodeCall(IERC20PonsFork.approve, (curve, RELAY_DELIVERED_BUY_AMOUNT))
+        });
+        IPonsV2CurveFork ponsDonateCurve = IPonsV2CurveFork(curve);
+        (uint256 quoteReserve, uint256 tokenReserve) = ponsDonateCurve.getReserves();
+        uint256 fee = RELAY_DELIVERED_BUY_AMOUNT * ponsDonateCurve.feeBps() / 10_000;
+        uint256 tax = RELAY_DELIVERED_BUY_AMOUNT * ponsDonateCurve.creatorTaxBps() / 10_000;
+        uint256 snipeTax =
+            RELAY_DELIVERED_BUY_AMOUNT * ponsDonateCurve.currentSnipeTaxBps(predicted) / 10_000;
+        uint256 netInput = RELAY_DELIVERED_BUY_AMOUNT - fee - tax - snipeTax;
+        uint256 quotedTokensOut = netInput * tokenReserve / (quoteReserve + netInput);
+        uint256 minimumTokensOut = quotedTokensOut * 9_900 / 10_000;
+        buyCalls[1] = IPrivateLaunchpadAccount.Call({
+            target: curve,
+            value: 0,
+            data: abi.encodeCall(
+                IPonsV2CurveFork.buy, (RELAY_DELIVERED_BUY_AMOUNT, minimumTokensOut, predicted)
+            )
+        });
+        bytes memory buySignature =
+            _signWithName(predicted, buyCalls, 0, deadline, 0, "PonsPrivacyAccount");
+
+        vm.prank(relayer);
+        (, bytes[] memory results) = accountFactory.deployAndExecute(
+            owner, ACCOUNT_INDEX, buyCalls, 0, deadline, address(0), 0, address(0), buySignature
+        );
+
+        uint256 tokensOut = abi.decode(results[1], (uint256));
+        assertGt(tokensOut, 0);
+        assertEq(IERC20PonsFork(PONS_DONATE).balanceOf(predicted), tokensOut);
+        assertEq(IERC20PonsFork(USDG).balanceOf(predicted), 0);
     }
 
     function _launch() internal {
@@ -228,6 +286,19 @@ contract PonsV2ForkTest is Test {
         uint256 executionDeadline,
         uint256 prefund
     ) internal view returns (bytes memory signature) {
+        return _signWithName(
+            verifyingAccount, calls, nonce, executionDeadline, prefund, "PrivateLaunchpadAccount"
+        );
+    }
+
+    function _signWithName(
+        address verifyingAccount,
+        IPrivateLaunchpadAccount.Call[] memory calls,
+        uint256 nonce,
+        uint256 executionDeadline,
+        uint256 prefund,
+        string memory domainName
+    ) internal view returns (bytes memory signature) {
         bytes32[] memory callHashes = new bytes32[](calls.length);
         bytes32 callTypehash = keccak256("Call(address target,uint256 value,bytes data)");
         for (uint256 i; i < calls.length; ++i) {
@@ -240,7 +311,7 @@ contract PonsV2ForkTest is Test {
                 keccak256(
                     "EIP712Domain(string name,string version,uint256 chainId,address verifyingContract)"
                 ),
-                keccak256("PrivateLaunchpadAccount"),
+                keccak256(bytes(domainName)),
                 keccak256("1"),
                 block.chainid,
                 verifyingAccount

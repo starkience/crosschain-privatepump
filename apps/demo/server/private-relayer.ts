@@ -1,14 +1,48 @@
 import { randomUUID } from "node:crypto";
+import { decodeErrorResult, isHex, type Hex } from "viem";
 import {
   parseRelayRequest,
   relayerFromEnv,
   type PrivateLaunchpadRelayer,
 } from "../../../packages/relayer/src/index.js";
+import { privateLaunchpadAccountFactoryAbi } from "../../../packages/sdk/src/index.js";
 
 const MAX_BODY_BYTES = 128 * 1024;
 let cachedRelayer: PrivateLaunchpadRelayer | undefined;
 
 export const config = { maxDuration: 60 };
+
+const executionTargetErrorAbi = [
+  {
+    type: "error",
+    name: "ERC20InsufficientBalance",
+    inputs: [
+      { name: "sender", type: "address" },
+      { name: "balance", type: "uint256" },
+      { name: "needed", type: "uint256" },
+    ],
+  },
+  {
+    type: "error",
+    name: "ERC20InsufficientAllowance",
+    inputs: [
+      { name: "spender", type: "address" },
+      { name: "allowance", type: "uint256" },
+      { name: "needed", type: "uint256" },
+    ],
+  },
+  {
+    type: "error",
+    name: "SlippageExceeded",
+    inputs: [
+      { name: "actual", type: "uint256" },
+      { name: "minimum", type: "uint256" },
+    ],
+  },
+  { type: "error", name: "CurveGraduated", inputs: [] },
+  { type: "error", name: "ZeroAmount", inputs: [] },
+  { type: "error", name: "MinimumOutputRequired", inputs: [] },
+] as const;
 
 export default async function handler(
   request: {
@@ -93,13 +127,79 @@ export function boundedErrorMessage(
   error: unknown,
   fallback = "unknown error",
 ): string {
-  const raw = error instanceof Error ? error.message : fallback;
+  const raw =
+    decodedExecutionRevert(error) ??
+    (error instanceof Error ? error.message : fallback);
   const reasonOnly = raw.split(
     /\n\s*(?:Contract Call|Request Arguments|Raw Call Arguments):/i,
   )[0]!;
   const compact = reasonOnly.replace(/\s+/g, " ").trim() || fallback;
   const redacted = compact.replace(/0x[0-9a-fA-F]{128,}/g, "[redacted hex]");
   return redacted.length > 800 ? `${redacted.slice(0, 797)}…` : redacted;
+}
+
+function decodedExecutionRevert(error: unknown): string | undefined {
+  const raw = rawRevertData(error);
+  if (!raw || raw === "0x") return undefined;
+  try {
+    const decoded = decodeErrorResult({
+      abi: privateLaunchpadAccountFactoryAbi,
+      data: raw,
+    });
+    if (decoded.errorName !== "CallFailed") {
+      return `The contract function "deployAndExecute" reverted: ${decoded.errorName}()`;
+    }
+    const [index, reason] = decoded.args;
+    return `The contract function "deployAndExecute" reverted: execution call ${Number(index) + 1} failed${decodedTargetReason(reason)}`;
+  } catch {
+    return undefined;
+  }
+}
+
+function decodedTargetReason(reason: Hex): string {
+  if (reason === "0x") return " without a reason";
+  try {
+    const decoded = decodeErrorResult({
+      abi: executionTargetErrorAbi,
+      data: reason,
+    });
+    if (decoded.errorName === "ERC20InsufficientBalance") {
+      const [, balance, needed] = decoded.args;
+      return `: ERC20InsufficientBalance(available ${balance}, required ${needed})`;
+    }
+    if (decoded.errorName === "ERC20InsufficientAllowance") {
+      const [, allowance, needed] = decoded.args;
+      return `: ERC20InsufficientAllowance(available ${allowance}, required ${needed})`;
+    }
+    if (decoded.errorName === "SlippageExceeded") {
+      const [actual, minimum] = decoded.args;
+      return `: SlippageExceeded(actual ${actual}, minimum ${minimum})`;
+    }
+    return `: ${decoded.errorName}()`;
+  } catch {
+    return ` with selector ${reason.slice(0, 10)}`;
+  }
+}
+
+function rawRevertData(error: unknown): Hex | undefined {
+  let current = error;
+  const visited = new Set<unknown>();
+  while (current && typeof current === "object" && !visited.has(current)) {
+    visited.add(current);
+    const candidate = current as {
+      raw?: unknown;
+      data?: unknown;
+      cause?: unknown;
+    };
+    if (typeof candidate.raw === "string" && isHex(candidate.raw)) {
+      return candidate.raw;
+    }
+    if (typeof candidate.data === "string" && isHex(candidate.data)) {
+      return candidate.data;
+    }
+    current = candidate.cause;
+  }
+  return undefined;
 }
 
 function getRelayer(): PrivateLaunchpadRelayer {

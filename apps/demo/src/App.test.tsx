@@ -636,6 +636,29 @@ describe("Plank interface", () => {
     expect(screen.getAllByText(/relay-request-multiline/i)).not.toHaveLength(0);
   });
 
+  it("keeps a lagging relayer funding read recoverable without another bridge", async () => {
+    const runtime = fixture("demo", "explore");
+    vi.mocked(runtime.buy).mockRejectedValue(
+      new RelayerRejectedError(
+        400,
+        "execution account funding is not visible to the relayer yet: available 0, required 1764547",
+        "relay-request-funding-lag",
+      ),
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: /night market/i }));
+    fireEvent.click(screen.getByRole("button", { name: /buy privately/i }));
+
+    expect(
+      await screen.findAllByText(
+        /use Retry buy; do not deposit or bridge again/i,
+      ),
+    ).not.toHaveLength(0);
+    expect(screen.getAllByText(/relay-request-funding-lag/i)).not.toHaveLength(
+      0,
+    );
+  });
+
   it("waits for the live Robinhood balance and buys only the visible USDG", async () => {
     const readAccountTokenBalance = vi.fn(
       async (_account: string, token: string) =>
