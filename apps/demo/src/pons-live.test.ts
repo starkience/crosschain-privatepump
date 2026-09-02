@@ -18,12 +18,25 @@ describe("MetaMask Robinhood connection", () => {
     expect(selectMetaMaskProvider(injected)).toBe(metamask);
   });
 
-  it("prefers MetaMask's EIP-6963 announcement", () => {
+  it("uses a clean legacy MetaMask without waking other announced wallets", () => {
     const legacy = { isMetaMask: true, request: vi.fn() };
     const announced = { isMetaMask: true, request: vi.fn() };
 
     expect(
       selectMetaMaskProvider(legacy, new Map([["io.metamask", announced]])),
+    ).toBe(legacy);
+  });
+
+  it("falls back to MetaMask's EIP-6963 announcement", () => {
+    const phantom = {
+      isMetaMask: true,
+      isPhantom: true,
+      request: vi.fn(),
+    };
+    const announced = { isMetaMask: true, request: vi.fn() };
+
+    expect(
+      selectMetaMaskProvider(phantom, new Map([["io.metamask", announced]])),
     ).toBe(announced);
   });
 

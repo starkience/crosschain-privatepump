@@ -45,15 +45,15 @@ interface AnnouncedWalletProvider {
 }
 
 const announcedWalletProviders = new Map<string, BrowserInjectedProvider>();
+let walletProviderDiscoveryRequested = false;
 
 if (typeof window !== "undefined") {
   window.addEventListener("eip6963:announceProvider", (event) => {
     const detail = (event as CustomEvent<AnnouncedWalletProvider>).detail;
-    if (detail?.info?.rdns && detail.provider) {
+    if (detail?.info?.rdns === "io.metamask" && detail.provider) {
       announcedWalletProviders.set(detail.info.rdns, detail.provider);
     }
   });
-  window.dispatchEvent(new Event("eip6963:requestProvider"));
 }
 
 export async function createPrivatePonsLiveRuntime(
@@ -304,9 +304,6 @@ export function selectMetaMaskProvider(
     BrowserInjectedProvider
   > = announcedWalletProviders,
 ): Eip1193Provider {
-  const announced = announcedProviders.get("io.metamask");
-  if (announced) return announced;
-
   const candidates = legacyProvider?.providers?.length
     ? legacyProvider.providers
     : legacyProvider
@@ -320,19 +317,35 @@ export function selectMetaMaskProvider(
   );
   if (metamask) return metamask;
 
+  const announced = announcedProviders.get("io.metamask");
+  if (announced) return announced;
+
   throw new Error(
     "MetaMask was not found. Enable MetaMask for this site, then retry.",
   );
 }
 
 function injectedProvider(): Eip1193Provider {
-  // EIP-6963 avoids relying on whichever extension last overwrote
-  // window.ethereum. Request another announcement in case MetaMask loaded
-  // after this module initialized, then fall back to the legacy provider list.
-  window.dispatchEvent(new Event("eip6963:requestProvider"));
+  // Prefer the isolated MetaMask entry from the legacy multi-provider list.
+  // Broadcasting an EIP-6963 request wakes every installed wallet extension;
+  // only do that once, and only when the clean legacy MetaMask provider is not
+  // already available. This avoids repeatedly exercising broken Phantom or
+  // stale extension message streams during one private workflow.
   const value = (window as unknown as { ethereum?: BrowserInjectedProvider })
     .ethereum;
-  return selectMetaMaskProvider(value);
+  try {
+    return selectMetaMaskProvider(value, new Map());
+  } catch (legacyError) {
+    if (!walletProviderDiscoveryRequested) {
+      walletProviderDiscoveryRequested = true;
+      window.dispatchEvent(new Event("eip6963:requestProvider"));
+    }
+    try {
+      return selectMetaMaskProvider(value);
+    } catch {
+      throw legacyError;
+    }
+  }
 }
 
 function randomAccountIndex(): number {

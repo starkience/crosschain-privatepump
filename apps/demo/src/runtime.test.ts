@@ -269,13 +269,14 @@ describe("live frontend runtime", () => {
     ]);
   });
 
-  it("times out a stale MetaMask request and allows a clean retry", async () => {
+  it("times out a stale MetaMask request without stacking a second request", async () => {
     vi.useFakeTimers();
     try {
-      const connectWallet = vi
-        .fn<() => Promise<typeof address>>()
-        .mockReturnValueOnce(new Promise(() => undefined))
-        .mockResolvedValueOnce(address);
+      let resolveWallet!: (value: typeof address) => void;
+      const pendingWallet = new Promise<typeof address>((resolve) => {
+        resolveWallet = resolve;
+      });
+      const connectWallet = vi.fn(() => pendingWallet);
       const runtime = createLiveRuntime({
         appId: "launch.example",
         accountIndex: 3,
@@ -291,10 +292,54 @@ describe("live frontend runtime", () => {
       });
 
       const staleRequest = runtime.connectWallet();
+      const staleExpectation = expect(staleRequest).rejects.toThrow(
+        /MetaMask did not respond/,
+      );
       await vi.advanceTimersByTimeAsync(100);
-      await expect(staleRequest).rejects.toThrow(/MetaMask did not respond/);
-      await expect(runtime.connectWallet()).resolves.toBe(address);
-      expect(connectWallet).toHaveBeenCalledTimes(2);
+      await staleExpectation;
+      const retry = runtime.connectWallet();
+      expect(connectWallet).toHaveBeenCalledOnce();
+      resolveWallet(address);
+      await expect(retry).resolves.toBe(address);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("does not stack identity signature requests after a timeout", async () => {
+    vi.useFakeTimers();
+    try {
+      let resolveSignature!: (value: string) => void;
+      const pendingSignature = new Promise<string>((resolve) => {
+        resolveSignature = resolve;
+      });
+      const signIdentity = vi.fn(() => pendingSignature);
+      const deriveSession = vi.fn(async () => session);
+      const runtime = createLiveRuntime({
+        appId: "launch.example",
+        accountIndex: 3,
+        client: { deriveSession } as unknown as PrivateLaunchpadClient,
+        adapter: { id: "host", chainId: 84532 } as LaunchpadAdapter<
+          LaunchDraft,
+          never
+        >,
+        connectWallet: async () => address,
+        signIdentity,
+        walletRequestTimeoutMs: 100,
+        buildOpenIntent: (intent) => intent,
+      });
+
+      const first = runtime.prepareIdentity();
+      const firstExpectation = expect(first).rejects.toThrow(
+        /sign-in request is still pending/,
+      );
+      await vi.advanceTimersByTimeAsync(100);
+      await firstExpectation;
+      const retry = runtime.prepareIdentity();
+      expect(signIdentity).toHaveBeenCalledOnce();
+      resolveSignature("wallet-signature");
+      await expect(retry).resolves.toMatchObject({ session });
+      expect(deriveSession).toHaveBeenCalledOnce();
     } finally {
       vi.useRealTimers();
     }

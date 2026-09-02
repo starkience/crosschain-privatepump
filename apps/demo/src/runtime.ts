@@ -207,7 +207,11 @@ export function createLiveRuntime<
   let connectedAddress: PrivateLaunchpadSession["account"] | undefined;
   let identitySignature: string | undefined;
   let session: PrivateLaunchpadSession | undefined;
-  let walletConnection: Promise<PrivateLaunchpadSession["account"]> | undefined;
+  let walletConnectionRequest:
+    Promise<PrivateLaunchpadSession["account"]> | undefined;
+  let identitySignatureRequest: Promise<string> | undefined;
+  let identitySignatureRequestAddress:
+    PrivateLaunchpadSession["account"] | undefined;
   const walletRequestTimeoutMs =
     config.walletRequestTimeoutMs ?? DEFAULT_WALLET_REQUEST_TIMEOUT_MS;
   if (
@@ -225,33 +229,93 @@ export function createLiveRuntime<
   };
 
   const connect = () => {
-    if (walletConnection) return walletConnection;
+    if (connectedAddress) return Promise.resolve(connectedAddress);
 
-    const pending = walletRequestWithTimeout(
-      Promise.resolve().then(() => config.connectWallet()),
+    if (!walletConnectionRequest) {
+      const rawRequest = Promise.resolve()
+        .then(() => config.connectWallet())
+        .then((nextAddress) => {
+          if (
+            connectedAddress &&
+            connectedAddress.toLowerCase() !== nextAddress.toLowerCase()
+          ) {
+            identitySignature = undefined;
+            session = undefined;
+          }
+          connectedAddress = nextAddress;
+          return connectedAddress;
+        });
+      walletConnectionRequest = rawRequest;
+      rawRequest.then(
+        () => {
+          if (walletConnectionRequest === rawRequest) {
+            walletConnectionRequest = undefined;
+          }
+        },
+        () => {
+          if (walletConnectionRequest === rawRequest) {
+            walletConnectionRequest = undefined;
+          }
+        },
+      );
+    }
+
+    return walletRequestWithTimeout(
+      walletConnectionRequest,
       walletRequestTimeoutMs,
-      "MetaMask did not respond. Close any stale wallet popup and try connecting again.",
-    ).then((nextAddress) => {
-      if (
-        connectedAddress &&
-        connectedAddress.toLowerCase() !== nextAddress.toLowerCase()
-      ) {
-        identitySignature = undefined;
-        session = undefined;
-      }
-      connectedAddress = nextAddress;
-      return connectedAddress;
-    });
-    walletConnection = pending;
-    pending.then(
-      () => {
-        if (walletConnection === pending) walletConnection = undefined;
-      },
-      () => {
-        if (walletConnection === pending) walletConnection = undefined;
-      },
+      "MetaMask did not respond. Its provider request is still pending, so retrying will not create another request. Open MetaMask and resolve it; if the extension stream is unresponsive, restart Chrome and unlock MetaMask.",
     );
-    return pending;
+  };
+
+  const signPrivateIdentity = (
+    activeAddress: PrivateLaunchpadSession["account"],
+  ): Promise<string> => {
+    if (identitySignature) return Promise.resolve(identitySignature);
+    if (
+      identitySignatureRequest &&
+      identitySignatureRequestAddress?.toLowerCase() !==
+        activeAddress.toLowerCase()
+    ) {
+      return Promise.reject(
+        new Error(
+          "A MetaMask sign-in request is pending for another account. Resolve it in MetaMask or reload after switching accounts.",
+        ),
+      );
+    }
+
+    if (!identitySignatureRequest) {
+      const rawRequest = Promise.resolve().then(() =>
+        config.signIdentity({
+          address: activeAddress,
+          message: createPrivateLaunchpadIdentityMessage(config.appId),
+        }),
+      );
+      identitySignatureRequest = rawRequest;
+      identitySignatureRequestAddress = activeAddress;
+      rawRequest.then(
+        (signature) => {
+          if (connectedAddress?.toLowerCase() === activeAddress.toLowerCase()) {
+            identitySignature = signature;
+          }
+          if (identitySignatureRequest === rawRequest) {
+            identitySignatureRequest = undefined;
+            identitySignatureRequestAddress = undefined;
+          }
+        },
+        () => {
+          if (identitySignatureRequest === rawRequest) {
+            identitySignatureRequest = undefined;
+            identitySignatureRequestAddress = undefined;
+          }
+        },
+      );
+    }
+
+    return walletRequestWithTimeout(
+      identitySignatureRequest,
+      walletRequestTimeoutMs,
+      "A MetaMask sign-in request is still pending. Open MetaMask and approve or reject that request; if its provider stream is unresponsive, restart Chrome and unlock MetaMask. Retrying will not stack another request.",
+    );
   };
 
   return {
@@ -276,16 +340,7 @@ export function createLiveRuntime<
       connectedAddress = activeAddress;
       let activeIdentitySignature = identitySignature;
       if (!activeIdentitySignature) {
-        activeIdentitySignature = await walletRequestWithTimeout<string>(
-          Promise.resolve().then(() =>
-            config.signIdentity({
-              address: activeAddress,
-              message: createPrivateLaunchpadIdentityMessage(config.appId),
-            }),
-          ),
-          walletRequestTimeoutMs,
-          "MetaMask did not respond to the sign-in request. Close any stale wallet popup and try connecting again.",
-        );
+        activeIdentitySignature = await signPrivateIdentity(activeAddress);
       }
       identitySignature = activeIdentitySignature;
       session = await config.client.deriveSession(

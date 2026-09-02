@@ -320,6 +320,37 @@ describe("Plank interface", () => {
     expect(runtime.readPendingDeposit).toHaveBeenCalledOnce();
   });
 
+  it("directs the user to MetaMask while identity signing is pending", async () => {
+    const connectedAddress =
+      "0x1111111111111111111111111111111111111111" as PrivateLaunchpadSession["account"];
+    let resolveIdentity!: (value: {
+      connectedAddress: typeof connectedAddress;
+      storageScope: `0x${string}`;
+      session: PrivateLaunchpadSession;
+    }) => void;
+    const pendingIdentity = new Promise<{
+      connectedAddress: typeof connectedAddress;
+      storageScope: `0x${string}`;
+      session: PrivateLaunchpadSession;
+    }>((resolve) => {
+      resolveIdentity = resolve;
+    });
+    const runtime = fixture("live", "launch", {
+      prepareIdentity: vi.fn(() => pendingIdentity),
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: /connect metamask/i }));
+
+    expect(await screen.findByText("Check MetaMask…")).toBeTruthy();
+    expect(runtime.connectWallet).toHaveBeenCalledOnce();
+    resolveIdentity({
+      connectedAddress,
+      storageScope: `0x${"aa".repeat(32)}` as `0x${string}`,
+      session,
+    });
+    await screen.findByRole("button", { name: /metamask connected/i });
+  });
+
   it("restores the STRK20 balance after reconnecting", async () => {
     const runtime = fixture("live");
     vi.mocked(runtime.readPrivateBalance).mockResolvedValue(25_000_000n);

@@ -1018,6 +1018,7 @@ export function App({ runtime }: AppProps) {
   const [connectedWallet, setConnectedWallet] =
     useState<PrivateLaunchpadSession["account"]>();
   const [walletConnecting, setWalletConnecting] = useState(false);
+  const [walletSigning, setWalletSigning] = useState(false);
   const [walletError, setWalletError] = useState<string>();
 
   const [name, setName] = useState("Night Market");
@@ -1927,6 +1928,8 @@ export function App({ runtime }: AppProps) {
     setWalletConnecting(true);
     setWalletError(undefined);
     try {
+      await runtime.connectWallet();
+      setWalletSigning(true);
       const prepared = await runtime.prepareIdentity(0);
       rememberStorageScope(prepared);
       setConnectedWallet(prepared.connectedAddress);
@@ -1962,6 +1965,7 @@ export function App({ runtime }: AppProps) {
       setWalletError(errorMessage(reason));
       return undefined;
     } finally {
+      setWalletSigning(false);
       setWalletConnecting(false);
     }
   }
@@ -3189,7 +3193,9 @@ export function App({ runtime }: AppProps) {
                   />
                   <span>
                     {walletConnecting
-                      ? "Connecting…"
+                      ? walletSigning
+                        ? "Check MetaMask…"
+                        : "Connecting…"
                       : connectedWallet
                         ? shorten(connectedWallet)
                         : "Connect"}
@@ -3868,7 +3874,9 @@ export function App({ runtime }: AppProps) {
                     >
                       {runtime.mode === "live" && !connectedWallet
                         ? walletConnecting
-                          ? "Connecting…"
+                          ? walletSigning
+                            ? "Check MetaMask…"
+                            : "Connecting…"
                           : "Connect wallet"
                         : (busyLabel ?? "Launch privately")}
                     </button>
