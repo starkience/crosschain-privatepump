@@ -920,7 +920,7 @@ describe("Plank interface", () => {
   });
 
   it("makes the public deposit edge explicit and adds to Private Balance", async () => {
-    const runtime = fixture();
+    const runtime = fixture("demo", "explore");
     vi.mocked(runtime.readPrivateBalance).mockResolvedValue(275_000_000n);
 
     fireEvent.click(screen.getAllByRole("button", { name: /^deposit$/i })[0]!);
@@ -931,7 +931,11 @@ describe("Plank interface", () => {
       screen.getByRole("button", { name: /continue in wallet/i }),
     );
 
-    expect(await screen.findByText(/25 USDC resting/i)).toBeTruthy();
+    await waitFor(() =>
+      expect(
+        document.querySelector(".pons-private-balance")?.textContent,
+      ).toContain("275 USDC"),
+    );
     expect(runtime.deposit).toHaveBeenCalledWith(
       100_000_000n,
       expect.any(Function),

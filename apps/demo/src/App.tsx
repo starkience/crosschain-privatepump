@@ -2974,7 +2974,7 @@ export function App({ runtime }: AppProps) {
             <div className="nav-actions pons-nav-actions">
               <span className="pons-private-balance">
                 <LockKeyIcon size={13} weight="fill" aria-hidden="true" />
-                {formatUsdc(privateBalanceAvailable)} USDC
+                {formatUsdc(privateBalance)} USDC
               </span>
               <button
                 className="pons-deposit-nav"
