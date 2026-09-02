@@ -130,4 +130,30 @@ describe("Pons onchain position recovery", () => {
       getLogs.mock.calls.some(([request]) => request.toBlock <= 9_999n),
     ).toBe(true);
   });
+
+  it("backs off and retries a rate-limited recovery query", async () => {
+    let calls = 0;
+    const getLogs = vi.fn(async () => {
+      calls += 1;
+      if (calls === 1) throw new Error("RPC error 429: Too Many Requests");
+      return [];
+    });
+    const publicClient = {
+      getLogs,
+      getBlockNumber: vi.fn(async () => 120n),
+    } as unknown as PublicClient;
+    const client = {
+      channel: "private-launchpad-v1",
+      config: {
+        factory: FACTORY,
+        publicClient,
+        bridge: { deriveEvmOwner: vi.fn() },
+      },
+    } as unknown as PrivateLaunchpadClient;
+
+    await expect(
+      recoverPonsPositions({ client, signature: "0x1234", fromBlock: 90n }),
+    ).resolves.toEqual([]);
+    expect(getLogs).toHaveBeenCalledTimes(2);
+  });
 });

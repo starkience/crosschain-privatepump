@@ -89,6 +89,9 @@ const MINIMUM_PRIVATE_REST_MINUTES = 2;
 const RANDOM_PRIVATE_REST_MINUTES = 4;
 const FRESH_ACCOUNT_BALANCE_READS = 20;
 const FRESH_ACCOUNT_BALANCE_POLL_MS = 1_000;
+const ROBINHOOD_RPC_READ_ATTEMPTS = 4;
+const ROBINHOOD_RPC_RETRY_BASE_MS = 500;
+const PORTFOLIO_READ_SPACING_MS = 150;
 const OFFICIAL_PONS_ORIGIN = "https://robinhood.ponslaunchpad.com";
 const USDG_ICON_URL =
   "https://424565.fs1.hubspotusercontent-na1.net/hubfs/424565/GDN_USDG_Token_32x32.png";
@@ -706,6 +709,9 @@ function errorMessage(error: unknown): string {
   if (/relay quote/i.test(message) && /amount too low/i.test(message)) {
     return "Relay cannot return this amount yet because it is too low to cover the swap fees and Arbitrum gas top-up. The USDG remains in the recorded fresh Robinhood account; retry when Relay fees are lower.";
   }
+  if (isRobinhoodRpcRateLimited(error)) {
+    return "Robinhood RPC is temporarily rate-limited. No new transaction was submitted by this failed read; wait a moment and retry.";
+  }
   if (/eth_getLogs|log query timed out/i.test(message)) {
     return "Robinhood RPC timed out while scanning position history. Existing saved positions remain available; try recovery again shortly.";
   }
@@ -713,6 +719,48 @@ function errorMessage(error: unknown): string {
     return "The paymaster reports that this transaction was already submitted or its nonce was used. It may already have completed, so PonsButPrivate is reconciling onchain state without repeating the public transfer.";
   }
   return message;
+}
+
+function isRobinhoodRpcRateLimited(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error);
+  return /too many requests|\b429\b|rate[ -]?limit/i.test(message);
+}
+
+async function retryRobinhoodRpcRead<T>(read: () => Promise<T>): Promise<T> {
+  let lastError: unknown;
+  for (let attempt = 0; attempt < ROBINHOOD_RPC_READ_ATTEMPTS; attempt += 1) {
+    try {
+      return await read();
+    } catch (error) {
+      lastError = error;
+      if (
+        !isRobinhoodRpcRateLimited(error) ||
+        attempt + 1 >= ROBINHOOD_RPC_READ_ATTEMPTS
+      ) {
+        throw error;
+      }
+      await new Promise((resolve) =>
+        window.setTimeout(resolve, ROBINHOOD_RPC_RETRY_BASE_MS * 2 ** attempt),
+      );
+    }
+  }
+  throw lastError;
+}
+
+function readAccountTokenBalanceWithRetry(
+  runtime: LaunchpadRuntime,
+  account: PrivateLaunchpadSession["account"],
+  token: PrivateLaunchpadSession["account"],
+): Promise<bigint> {
+  return retryRobinhoodRpcRead(() =>
+    runtime.readAccountTokenBalance(account, token),
+  );
+}
+
+function portfolioReadError(error: unknown): string {
+  return isRobinhoodRpcRateLimited(error)
+    ? "Robinhood RPC is temporarily rate-limited. The saved balance is still available; use Refresh shortly."
+    : errorMessage(error);
 }
 
 function boundedRelayerDetail(message: string): string | undefined {
@@ -737,7 +785,8 @@ async function waitForFreshAccountUsdg(
 
   let visibleBalance = 0n;
   for (let attempt = 0; attempt < FRESH_ACCOUNT_BALANCE_READS; attempt += 1) {
-    visibleBalance = await runtime.readAccountTokenBalance(
+    visibleBalance = await readAccountTokenBalanceWithRetry(
+      runtime,
       account,
       PONS_V2_ROBINHOOD.usdg,
     );
@@ -998,14 +1047,17 @@ export function App({ runtime }: AppProps) {
   useEffect(() => {
     if (!runtime.readMarketMetadata) return undefined;
     let cancelled = false;
-    void Promise.all(
-      LIVE_PONS_MARKETS.map(async (market) => {
+    void (async () => {
+      const entries: Array<
+        readonly [string, (typeof liveMarketMetadata)[string]]
+      > = [];
+      for (const market of LIVE_PONS_MARKETS) {
         try {
           const metadata = await runtime.readMarketMetadata!(market.token);
           const imageSources = metadata.logo
             ? ponsAssetUrls(metadata.logo)
             : [];
-          return [
+          entries.push([
             market.token.toLowerCase(),
             {
               // Pons lists this legacy market as "Harvest" even though its
@@ -1020,20 +1072,15 @@ export function App({ runtime }: AppProps) {
                 : {}),
               ...(imageSources.length > 0 ? { imageSources } : {}),
             },
-          ] as const;
+          ]);
         } catch {
-          return undefined;
+          // Keep bundled metadata when a public RPC read is unavailable.
         }
-      }),
-    ).then((entries) => {
+      }
+      return entries;
+    })().then((entries) => {
       if (cancelled) return;
-      setLiveMarketMetadata(
-        Object.fromEntries(
-          entries.filter(
-            (entry): entry is NonNullable<(typeof entries)[number]> => !!entry,
-          ),
-        ),
-      );
+      setLiveMarketMetadata(Object.fromEntries(entries));
     });
     return () => {
       cancelled = true;
@@ -1288,10 +1335,12 @@ export function App({ runtime }: AppProps) {
       return next;
     });
 
-    const results = await Promise.all(
-      tokenPositions.map(async (position) => {
+    const results: Array<readonly [string, PortfolioSnapshot]> = [];
+    for (const [index, position] of tokenPositions.entries()) {
+      const result: readonly [string, PortfolioSnapshot] = await (async () => {
         try {
-          const tokenBalance = await runtime.readAccountTokenBalance(
+          const tokenBalance = await readAccountTokenBalanceWithRetry(
+            runtime,
             position.account,
             position.token,
           );
@@ -1304,11 +1353,13 @@ export function App({ runtime }: AppProps) {
           }
 
           try {
-            const quote = await runtime.quoteSell(position.account, {
-              token: position.token,
-              amountIn: tokenBalance,
-              slippageBps: 100,
-            });
+            const quote = await retryRobinhoodRpcRead(() =>
+              runtime.quoteSell(position.account, {
+                token: position.token,
+                amountIn: tokenBalance,
+                slippageBps: 100,
+              }),
+            );
             return [
               position.id,
               {
@@ -1326,7 +1377,7 @@ export function App({ runtime }: AppProps) {
                 status: "verified",
                 tokenBalance,
                 checkedAt,
-                error: `Sell quote unavailable: ${errorMessage(reason)}`,
+                error: `Sell quote unavailable: ${portfolioReadError(reason)}`,
               },
             ] as const;
           }
@@ -1336,18 +1387,27 @@ export function App({ runtime }: AppProps) {
             {
               status: "unavailable",
               checkedAt: Date.now(),
-              error: errorMessage(reason),
+              error: portfolioReadError(reason),
             },
           ] as const;
         }
-      }),
-    );
+      })();
+      results.push(result);
+      if (index + 1 < tokenPositions.length) {
+        await new Promise((resolve) =>
+          window.setTimeout(resolve, PORTFOLIO_READ_SPACING_MS),
+        );
+      }
+    }
 
     if (portfolioRefreshId.current !== refreshId) return;
-    setPortfolioSnapshots((current) => ({
-      ...current,
-      ...Object.fromEntries(results),
-    }));
+    setPortfolioSnapshots((current) => {
+      const next = { ...current };
+      for (const [id, snapshot] of results) {
+        next[id] = { ...current[id], ...snapshot };
+      }
+      return next;
+    });
     setPortfolioRefreshing(false);
   }, [positions, runtime]);
 
@@ -1832,7 +1892,7 @@ export function App({ runtime }: AppProps) {
       rememberStorageScope(prepared);
       setConnectedWallet(prepared.connectedAddress);
       const restored = restorePositions(prepared.connectedAddress);
-      if (runtime.recoverPositions) {
+      if (runtime.recoverPositions && restored.length === 0) {
         void recoverOnchainPositions(prepared.connectedAddress, restored);
       }
       const [recoveredBalance, pendingDeposit] = await Promise.all([

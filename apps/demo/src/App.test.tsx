@@ -671,6 +671,41 @@ describe("Plank interface", () => {
     );
   });
 
+  it("retries a rate-limited Robinhood position read", async () => {
+    let positionReads = 0;
+    const readAccountTokenBalance = vi.fn(
+      async (_account: string, token: string) => {
+        if (token.toLowerCase() === ROBINHOOD_USDG.toLowerCase()) {
+          return 25_000_000n;
+        }
+        positionReads += 1;
+        if (positionReads === 1) {
+          throw new Error("RPC Request failed: Too Many Requests (429)");
+        }
+        return 827_041_6409n * 10n ** 14n;
+      },
+    );
+    fixture("live", "explore", {
+      readPrivateBalance: vi.fn(async () => 25_000_000n),
+      readAccountTokenBalance,
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: /connect metamask/i }));
+    await screen.findByRole("button", { name: /metamask connected/i });
+    fireEvent.click(screen.getByRole("button", { name: /PonsDonate/i }));
+    fireEvent.click(screen.getByRole("button", { name: /buy privately/i }));
+    await screen.findByRole("button", { name: /sell this position/i });
+    fireEvent.click(
+      within(
+        screen.getByRole("navigation", { name: /product navigation/i }),
+      ).getByRole("button", { name: /positions/i }),
+    );
+
+    expect(await screen.findByText("Onchain verified")).toBeTruthy();
+    expect(positionReads).toBe(2);
+    expect(screen.queryByText(/too many requests/i)).toBeNull();
+  });
+
   it("rechecks the live USDG balance before retrying a rejected buy", async () => {
     let fundingBalanceRead = true;
     const readAccountTokenBalance = vi.fn(
@@ -1010,7 +1045,8 @@ describe("Plank interface", () => {
     await screen.findByRole("button", { name: /sell creator position/i });
 
     cleanup();
-    const secondRuntime = fixture("live");
+    const recoverPositions = vi.fn(async () => []);
+    const secondRuntime = fixture("live", "launch", { recoverPositions });
     vi.mocked(secondRuntime.readPrivateBalance).mockResolvedValue(0n);
     fireEvent.click(screen.getByRole("button", { name: /connect metamask/i }));
     await screen.findByRole("button", { name: /metamask connected/i });
@@ -1037,5 +1073,6 @@ describe("Plank interface", () => {
         amountIn: 1_240_000n * 10n ** 18n,
       }),
     );
+    expect(recoverPositions).not.toHaveBeenCalled();
   });
 });

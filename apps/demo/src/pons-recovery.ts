@@ -19,6 +19,8 @@ import type { PrivatePosition } from "./positions.js";
 const PRIVATE_FACTORY_DEPLOYMENT_BLOCK = 48_000_000n;
 const MAX_LOG_BLOCK_RANGE = 50_000n;
 const MIN_LOG_BLOCK_RANGE = 500n;
+const RPC_RATE_LIMIT_ATTEMPTS = 4;
+const RPC_RATE_LIMIT_RETRY_BASE_MS = 500;
 const ACCOUNT_CREATED_EVENT = parseAbiItem(
   "event AccountCreated(address indexed account, address indexed owner, uint256 indexed index)",
 );
@@ -96,7 +98,9 @@ export async function recoverPonsPositions({
   }
 
   const publicClient = client.config.publicClient;
-  const latestBlock = await publicClient.getBlockNumber();
+  const latestBlock = await retryRateLimited(() =>
+    publicClient.getBlockNumber(),
+  );
   const accountEvents = await getLogsInBlockRanges(
     fromBlock,
     latestBlock,
@@ -139,11 +143,12 @@ export async function recoverPonsPositions({
     });
   }
 
-  const recovered = await Promise.all(
-    accounts.map((account) =>
-      recoverAccountPositions(publicClient, account, latestBlock),
-    ),
-  );
+  const recovered: PrivatePosition[][] = [];
+  for (const account of accounts) {
+    recovered.push(
+      await recoverAccountPositions(publicClient, account, latestBlock),
+    );
+  }
   return recovered
     .flat()
     .sort((left, right) => right.updatedAt - left.updatedAt);
@@ -164,12 +169,15 @@ export async function readPonsTokenMetadata(
       abi: tokenMetadataAbi,
       functionName,
     });
-  const [name, symbol, logo, description] = await Promise.all([
-    read("name").catch(() => ""),
-    read("symbol").catch(() => ""),
-    read("logo").catch(() => ""),
-    read("description").catch(() => ""),
-  ]);
+  // Public Robinhood RPCs use burst limits. These fields are background
+  // decoration, so read them sequentially instead of issuing four eth_calls
+  // at once for every market card.
+  const name = await retryRateLimited(() => read("name")).catch(() => "");
+  const symbol = await retryRateLimited(() => read("symbol")).catch(() => "");
+  const logo = await retryRateLimited(() => read("logo")).catch(() => "");
+  const description = await retryRateLimited(() => read("description")).catch(
+    () => "",
+  );
   return {
     name: name.slice(0, 64),
     symbol: symbol.replace(/^\$/, "").slice(0, 24),
@@ -185,23 +193,27 @@ async function recoverAccountPositions(
   session: AccountCandidate,
   latestBlock: bigint,
 ): Promise<PrivatePosition[]> {
-  const [incomingTransfers, launches] = await Promise.all([
-    getLogsInBlockRanges(session.blockNumber, latestBlock, (range) =>
+  const incomingTransfers = await getLogsInBlockRanges(
+    session.blockNumber,
+    latestBlock,
+    (range) =>
       publicClient.getLogs({
         event: TRANSFER_EVENT,
         args: { to: session.account },
         ...range,
       }),
-    ),
-    getLogsInBlockRanges(session.blockNumber, latestBlock, (range) =>
+  );
+  const launches = await getLogsInBlockRanges(
+    session.blockNumber,
+    latestBlock,
+    (range) =>
       publicClient.getLogs({
         address: PONS_V2_ROBINHOOD.factory,
         event: TOKEN_LAUNCHED_EVENT,
         args: { deployer: session.account },
         ...range,
       }),
-    ),
-  ]);
+  );
 
   const launchByToken = new Map(
     launches.flatMap((event) => {
@@ -225,102 +237,103 @@ async function recoverAccountPositions(
     ...launchByToken.keys(),
     ...transferByToken.keys(),
   ]);
-  const positions: Array<PrivatePosition | undefined> = await Promise.all(
-    [...candidateTokens].map(
-      async (tokenKey): Promise<PrivatePosition | undefined> => {
-        const token = getAddress(tokenKey);
-        const [balance, launch, metadata] = await Promise.all([
-          publicClient.readContract({
-            address: token,
-            abi: erc20BalanceAbi,
-            functionName: "balanceOf",
-            args: [session.account],
-          }),
-          publicClient
-            .readContract({
-              address: PONS_V2_ROBINHOOD.factory,
-              abi: ponsV2FactoryAbi,
-              functionName: "getLaunchedToken",
-              args: [token],
-            })
-            .catch(() => undefined),
-          readPonsTokenMetadata(publicClient, token),
-        ]);
-        if (
-          !launch?.exists ||
-          !isAddressEqual(launch.pairToken, PONS_V2_ROBINHOOD.usdg)
-        ) {
-          return undefined;
-        }
-        // A completed sale and return is no longer an open position. Local
-        // records may continue to show it as closed, but recovery focuses on
-        // custody that still requires the user's control.
-        if (balance === 0n) return undefined;
+  const positions: PrivatePosition[] = [];
+  for (const tokenKey of candidateTokens) {
+    const token = getAddress(tokenKey);
+    const balance = await retryRateLimited(() =>
+      publicClient.readContract({
+        address: token,
+        abi: erc20BalanceAbi,
+        functionName: "balanceOf",
+        args: [session.account],
+      }),
+    );
+    const launch = await retryRateLimited(() =>
+      publicClient.readContract({
+        address: PONS_V2_ROBINHOOD.factory,
+        abi: ponsV2FactoryAbi,
+        functionName: "getLaunchedToken",
+        args: [token],
+      }),
+    ).catch(() => undefined);
+    if (
+      !launch?.exists ||
+      !isAddressEqual(launch.pairToken, PONS_V2_ROBINHOOD.usdg)
+    ) {
+      continue;
+    }
+    // A completed sale and return is no longer an open position. Local
+    // records may continue to show it as closed, but recovery focuses on
+    // custody that still requires the user's control.
+    if (balance === 0n) continue;
 
-        const tokenTransfers = transferByToken.get(tokenKey) ?? [];
-        const transactionHashes = [
-          ...new Set(
-            tokenTransfers.flatMap((event) =>
-              event.transactionHash ? [event.transactionHash] : [],
-            ),
-          ),
-        ];
-        const receipts = await Promise.all(
-          transactionHashes.map((hash) =>
-            publicClient.getTransactionReceipt({ hash }),
-          ),
-        );
-        const usdgCommitted = receipts.reduce(
-          (total, receipt) =>
-            total + usdgSpentByAccount(receipt.logs, session.account),
-          0n,
-        );
+    const metadata = await readPonsTokenMetadata(publicClient, token);
 
-        const launchEvent = launchByToken.get(tokenKey);
-        const earliestBlock = [
-          launchEvent?.blockNumber,
-          ...tokenTransfers.map((event) => event.blockNumber),
-        ].reduce<bigint | undefined>(
-          (earliest, blockNumber) =>
-            blockNumber !== null &&
-            blockNumber !== undefined &&
-            (earliest === undefined || blockNumber < earliest)
-              ? blockNumber
-              : earliest,
-          undefined,
-        );
-        const block = earliestBlock
-          ? await publicClient.getBlock({ blockNumber: earliestBlock })
-          : undefined;
-        const createdAt = block ? Number(block.timestamp) * 1_000 : Date.now();
-        const buyTxHash = transactionHashes.at(-1);
-        const launchTxHash = launchEvent?.transactionHash ?? undefined;
-        const name = metadata.name || metadata.symbol || "Recovered Pons token";
-        const symbol = metadata.symbol || "TOKEN";
+    const tokenTransfers = transferByToken.get(tokenKey) ?? [];
+    const transactionHashes = [
+      ...new Set(
+        tokenTransfers.flatMap((event) =>
+          event.transactionHash ? [event.transactionHash] : [],
+        ),
+      ),
+    ];
+    const receipts = [];
+    for (const hash of transactionHashes) {
+      receipts.push(
+        await retryRateLimited(() =>
+          publicClient.getTransactionReceipt({ hash }),
+        ),
+      );
+    }
+    const usdgCommitted = receipts.reduce(
+      (total, receipt) =>
+        total + usdgSpentByAccount(receipt.logs, session.account),
+      0n,
+    );
 
-        return {
-          id: recoveredPositionId(session.account, token),
-          kind: launchEvent ? "launch" : "trade",
-          name,
-          symbol,
-          token,
-          accountIndex: session.accountIndex,
-          account: session.account,
-          status: "held",
-          usdcCommitted: usdgCommitted.toString(),
-          tokenAmount: balance.toString(),
-          ...(launchTxHash ? { launchTxHash } : {}),
-          ...(buyTxHash ? { buyTxHash } : {}),
-          createdAt,
-          updatedAt: Date.now(),
-        };
-      },
-    ),
-  );
+    const launchEvent = launchByToken.get(tokenKey);
+    const earliestBlock = [
+      launchEvent?.blockNumber,
+      ...tokenTransfers.map((event) => event.blockNumber),
+    ].reduce<bigint | undefined>(
+      (earliest, blockNumber) =>
+        blockNumber !== null &&
+        blockNumber !== undefined &&
+        (earliest === undefined || blockNumber < earliest)
+          ? blockNumber
+          : earliest,
+      undefined,
+    );
+    const block = earliestBlock
+      ? await retryRateLimited(() =>
+          publicClient.getBlock({ blockNumber: earliestBlock }),
+        )
+      : undefined;
+    const createdAt = block ? Number(block.timestamp) * 1_000 : Date.now();
+    const buyTxHash = transactionHashes.at(-1);
+    const launchTxHash = launchEvent?.transactionHash ?? undefined;
+    const name = metadata.name || metadata.symbol || "Recovered Pons token";
+    const symbol = metadata.symbol || "TOKEN";
 
-  return positions.filter(
-    (position): position is PrivatePosition => position !== undefined,
-  );
+    positions.push({
+      id: recoveredPositionId(session.account, token),
+      kind: launchEvent ? "launch" : "trade",
+      name,
+      symbol,
+      token,
+      accountIndex: session.accountIndex,
+      account: session.account,
+      status: "held",
+      usdcCommitted: usdgCommitted.toString(),
+      tokenAmount: balance.toString(),
+      ...(launchTxHash ? { launchTxHash } : {}),
+      ...(buyTxHash ? { buyTxHash } : {}),
+      createdAt,
+      updatedAt: Date.now(),
+    });
+  }
+
+  return positions;
 }
 
 async function getLogsInBlockRanges<T>(
@@ -340,7 +353,11 @@ async function getLogsInBlockRanges<T>(
     const chunkEnd =
       cursor + blockRange - 1n < toBlock ? cursor + blockRange - 1n : toBlock;
     try {
-      logs.push(...(await query({ fromBlock: cursor, toBlock: chunkEnd })));
+      logs.push(
+        ...(await retryRateLimited(() =>
+          query({ fromBlock: cursor, toBlock: chunkEnd }),
+        )),
+      );
       cursor = chunkEnd + 1n;
       if (blockRange < MAX_LOG_BLOCK_RANGE) {
         blockRange =
@@ -363,6 +380,28 @@ async function getLogsInBlockRanges<T>(
     }
   }
   return logs;
+}
+
+async function retryRateLimited<T>(operation: () => Promise<T>): Promise<T> {
+  let lastError: unknown;
+  for (let attempt = 0; attempt < RPC_RATE_LIMIT_ATTEMPTS; attempt += 1) {
+    try {
+      return await operation();
+    } catch (error) {
+      lastError = error;
+      const message = error instanceof Error ? error.message : String(error);
+      if (
+        !/too many requests|\b429\b|rate[ -]?limit/i.test(message) ||
+        attempt + 1 >= RPC_RATE_LIMIT_ATTEMPTS
+      ) {
+        throw error;
+      }
+      await new Promise((resolve) =>
+        setTimeout(resolve, RPC_RATE_LIMIT_RETRY_BASE_MS * 2 ** attempt),
+      );
+    }
+  }
+  throw lastError;
 }
 
 function isLogRangeTimeout(error: unknown): boolean {
