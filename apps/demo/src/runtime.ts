@@ -19,6 +19,8 @@ import {
 import { keccak256, toHex, type Hash, type Hex } from "viem";
 import type { PrivatePosition } from "./positions.js";
 
+const DEFAULT_WALLET_REQUEST_TIMEOUT_MS = 60_000;
+
 export interface LaunchDraft {
   name: string;
   symbol: string;
@@ -151,6 +153,8 @@ export interface LiveRuntimeConfig<
     address: PrivateLaunchpadSession["account"];
     message: string;
   }): Promise<string>;
+  /** Bounds injected-wallet requests so the UI cannot remain pending forever. */
+  walletRequestTimeoutMs?: number;
   buildOpenIntent(
     draft: LaunchDraft,
     session: PrivateLaunchpadSession,
@@ -204,6 +208,14 @@ export function createLiveRuntime<
   let identitySignature: string | undefined;
   let session: PrivateLaunchpadSession | undefined;
   let walletConnection: Promise<PrivateLaunchpadSession["account"]> | undefined;
+  const walletRequestTimeoutMs =
+    config.walletRequestTimeoutMs ?? DEFAULT_WALLET_REQUEST_TIMEOUT_MS;
+  if (
+    !Number.isSafeInteger(walletRequestTimeoutMs) ||
+    walletRequestTimeoutMs <= 0
+  ) {
+    throw new Error("wallet request timeout must be a positive safe integer");
+  }
 
   const requireIdentity = () => {
     if (!connectedAddress || !identitySignature || !session) {
@@ -215,7 +227,11 @@ export function createLiveRuntime<
   const connect = () => {
     if (walletConnection) return walletConnection;
 
-    const pending = config.connectWallet().then((nextAddress) => {
+    const pending = walletRequestWithTimeout(
+      Promise.resolve().then(() => config.connectWallet()),
+      walletRequestTimeoutMs,
+      "MetaMask did not respond. Close any stale wallet popup and try connecting again.",
+    ).then((nextAddress) => {
       if (
         connectedAddress &&
         connectedAddress.toLowerCase() !== nextAddress.toLowerCase()
@@ -256,18 +272,29 @@ export function createLiveRuntime<
       if (!Number.isSafeInteger(accountIndex) || accountIndex < 0) {
         throw new Error("account index must be a non-negative safe integer");
       }
-      connectedAddress = await connect();
-      identitySignature ??= await config.signIdentity({
-        address: connectedAddress,
-        message: createPrivateLaunchpadIdentityMessage(config.appId),
-      });
+      const activeAddress = await connect();
+      connectedAddress = activeAddress;
+      let activeIdentitySignature = identitySignature;
+      if (!activeIdentitySignature) {
+        activeIdentitySignature = await walletRequestWithTimeout<string>(
+          Promise.resolve().then(() =>
+            config.signIdentity({
+              address: activeAddress,
+              message: createPrivateLaunchpadIdentityMessage(config.appId),
+            }),
+          ),
+          walletRequestTimeoutMs,
+          "MetaMask did not respond to the sign-in request. Close any stale wallet popup and try connecting again.",
+        );
+      }
+      identitySignature = activeIdentitySignature;
       session = await config.client.deriveSession(
-        identitySignature,
+        activeIdentitySignature,
         accountIndex,
       );
       return {
-        connectedAddress,
-        storageScope: browserRecoveryScope(identitySignature),
+        connectedAddress: activeAddress,
+        storageScope: browserRecoveryScope(activeIdentitySignature),
         session,
       };
     },
@@ -493,10 +520,16 @@ export function createLiveRuntime<
         accountIndexes,
         connectedEvmAddress: identity.connectedAddress,
         authorize: (message) =>
-          config.signIdentity({
-            address: identity.connectedAddress,
-            message,
-          }),
+          walletRequestWithTimeout(
+            Promise.resolve().then(() =>
+              config.signIdentity({
+                address: identity.connectedAddress,
+                message,
+              }),
+            ),
+            walletRequestTimeoutMs,
+            "MetaMask did not respond to the recovery authorization. Close any stale wallet popup and retry.",
+          ),
         ...(onStep ? { onStep } : {}),
       });
     },
@@ -505,6 +538,29 @@ export function createLiveRuntime<
       session = undefined;
     },
   };
+}
+
+function walletRequestWithTimeout<T>(
+  request: Promise<T>,
+  timeoutMs: number,
+  message: string,
+): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timeout = globalThis.setTimeout(
+      () => reject(new Error(message)),
+      timeoutMs,
+    );
+    request.then(
+      (value) => {
+        globalThis.clearTimeout(timeout);
+        resolve(value);
+      },
+      (error: unknown) => {
+        globalThis.clearTimeout(timeout);
+        reject(error);
+      },
+    );
+  });
 }
 
 const demoAccount =

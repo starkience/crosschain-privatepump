@@ -32,6 +32,30 @@ const ROBINHOOD_CHAIN_HEX = `0x${ROBINHOOD_MAINNET_CHAIN_ID.toString(16)}`;
 const ROBINHOOD_READ_ATTEMPTS = 4;
 const ROBINHOOD_READ_RETRY_BASE_MS = 500;
 
+interface BrowserInjectedProvider extends Eip1193Provider {
+  readonly isMetaMask?: boolean;
+  readonly isPhantom?: boolean;
+  readonly isCoinbaseWallet?: boolean;
+  readonly providers?: readonly BrowserInjectedProvider[];
+}
+
+interface AnnouncedWalletProvider {
+  readonly info: { readonly rdns: string };
+  readonly provider: BrowserInjectedProvider;
+}
+
+const announcedWalletProviders = new Map<string, BrowserInjectedProvider>();
+
+if (typeof window !== "undefined") {
+  window.addEventListener("eip6963:announceProvider", (event) => {
+    const detail = (event as CustomEvent<AnnouncedWalletProvider>).detail;
+    if (detail?.info?.rdns && detail.provider) {
+      announcedWalletProviders.set(detail.info.rdns, detail.provider);
+    }
+  });
+  window.dispatchEvent(new Event("eip6963:requestProvider"));
+}
+
 export async function createPrivatePonsLiveRuntime(
   environment: Readonly<Record<string, unknown>>,
 ): Promise<LaunchpadRuntime> {
@@ -273,10 +297,42 @@ function creatorTaxFromLegacySlider(creatorSharePercent: number): number {
   return Math.max(0, Math.min(1_000, Math.round(creatorSharePercent * 10)));
 }
 
+export function selectMetaMaskProvider(
+  legacyProvider: BrowserInjectedProvider | undefined,
+  announcedProviders: ReadonlyMap<
+    string,
+    BrowserInjectedProvider
+  > = announcedWalletProviders,
+): Eip1193Provider {
+  const announced = announcedProviders.get("io.metamask");
+  if (announced) return announced;
+
+  const candidates = legacyProvider?.providers?.length
+    ? legacyProvider.providers
+    : legacyProvider
+      ? [legacyProvider]
+      : [];
+  const metamask = candidates.find(
+    (provider) =>
+      provider.isMetaMask === true &&
+      provider.isPhantom !== true &&
+      provider.isCoinbaseWallet !== true,
+  );
+  if (metamask) return metamask;
+
+  throw new Error(
+    "MetaMask was not found. Enable MetaMask for this site, then retry.",
+  );
+}
+
 function injectedProvider(): Eip1193Provider {
-  const value = (window as unknown as { ethereum?: Eip1193Provider }).ethereum;
-  if (!value) throw new Error("Install MetaMask to use PrivatePons live mode.");
-  return value;
+  // EIP-6963 avoids relying on whichever extension last overwrote
+  // window.ethereum. Request another announcement in case MetaMask loaded
+  // after this module initialized, then fall back to the legacy provider list.
+  window.dispatchEvent(new Event("eip6963:requestProvider"));
+  const value = (window as unknown as { ethereum?: BrowserInjectedProvider })
+    .ethereum;
+  return selectMetaMaskProvider(value);
 }
 
 function randomAccountIndex(): number {

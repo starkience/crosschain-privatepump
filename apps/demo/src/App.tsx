@@ -3189,7 +3189,7 @@ export function App({ runtime }: AppProps) {
                   />
                   <span>
                     {walletConnecting
-                      ? "Restoring…"
+                      ? "Connecting…"
                       : connectedWallet
                         ? shorten(connectedWallet)
                         : "Connect"}

@@ -259,6 +259,7 @@ describe("live frontend runtime", () => {
 
     const first = runtime.connectWallet();
     const second = runtime.connectWallet();
+    await Promise.resolve();
     expect(connectWallet).toHaveBeenCalledOnce();
 
     resolveWallet(address);
@@ -266,6 +267,37 @@ describe("live frontend runtime", () => {
       address,
       address,
     ]);
+  });
+
+  it("times out a stale MetaMask request and allows a clean retry", async () => {
+    vi.useFakeTimers();
+    try {
+      const connectWallet = vi
+        .fn<() => Promise<typeof address>>()
+        .mockReturnValueOnce(new Promise(() => undefined))
+        .mockResolvedValueOnce(address);
+      const runtime = createLiveRuntime({
+        appId: "launch.example",
+        accountIndex: 3,
+        client: {} as PrivateLaunchpadClient,
+        adapter: { id: "host", chainId: 84532 } as LaunchpadAdapter<
+          LaunchDraft,
+          never
+        >,
+        connectWallet,
+        signIdentity: async () => "wallet-signature",
+        walletRequestTimeoutMs: 100,
+        buildOpenIntent: (intent) => intent,
+      });
+
+      const staleRequest = runtime.connectWallet();
+      await vi.advanceTimersByTimeAsync(100);
+      await expect(staleRequest).rejects.toThrow(/MetaMask did not respond/);
+      await expect(runtime.connectWallet()).resolves.toBe(address);
+      expect(connectWallet).toHaveBeenCalledTimes(2);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("rejects zero-USDC launches at the runtime boundary", async () => {
