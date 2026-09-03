@@ -83,6 +83,7 @@ type PositionRecoveryState =
 type Workspace = "explore" | "launch" | "trade" | "positions";
 type OperationStage =
   "idle" | "identity" | "funding" | "executing" | "returning" | "complete";
+type PrivateExecutionState = "ready" | "checking" | "unavailable";
 
 const USDC_SCALE = 1_000_000n;
 const COMMON_USDC_AMOUNTS = [25, 50, 100, 250] as const;
@@ -95,6 +96,7 @@ const ROBINHOOD_RPC_RETRY_BASE_MS = 500;
 const AUTOMATIC_PRIVATE_RETURN_RETRY_DELAYS_MS = [5_000, 15_000, 45_000];
 const AUTOMATIC_PRIVATE_RETURN_STEADY_RETRY_MS = 5 * 60_000;
 const PORTFOLIO_READ_SPACING_MS = 150;
+const PRIVATE_EXECUTION_READINESS_POLL_MS = 30_000;
 const OFFICIAL_PONS_ORIGIN = "https://robinhood.ponslaunchpad.com";
 const USDG_ICON_URL =
   "https://424565.fs1.hubspotusercontent-na1.net/hubfs/424565/GDN_USDG_Token_32x32.png";
@@ -896,6 +898,13 @@ function formatWait(milliseconds: number): string {
   return minutes < 60 ? `${minutes}m` : `${Math.ceil(minutes / 60)}h`;
 }
 
+function formatReadyTime(timestamp: number): string {
+  return new Intl.DateTimeFormat(undefined, {
+    hour: "2-digit",
+    minute: "2-digit",
+  }).format(new Date(timestamp));
+}
+
 function privateBalanceRestMs(): number {
   const randomness = new Uint32Array(1);
   crypto.getRandomValues(randomness);
@@ -1033,6 +1042,12 @@ export function App({ runtime }: AppProps) {
   );
   const [stage, setStage] = useState<OperationStage>("idle");
   const [error, setError] = useState<string>();
+  const [privateExecutionState, setPrivateExecutionState] =
+    useState<PrivateExecutionState>(() =>
+      runtime.mode === "live" && runtime.ensurePrivateExecutionReady
+        ? "checking"
+        : "ready",
+    );
   const [identity, setIdentity] = useState<PreparedIdentity>();
   const [funding, setFunding] = useState<BridgeFundResult>();
   const [returnResult, setReturnResult] = useState<BridgeReturnResult>();
@@ -1222,6 +1237,37 @@ export function App({ runtime }: AppProps) {
     );
   }, [markets]);
 
+  useEffect(() => {
+    if (runtime.mode !== "live" || !runtime.ensurePrivateExecutionReady) {
+      setPrivateExecutionState("ready");
+      return undefined;
+    }
+    if (workspace !== "trade" && workspace !== "launch") {
+      return undefined;
+    }
+
+    let cancelled = false;
+    const checkReadiness = async (showChecking: boolean) => {
+      if (showChecking) setPrivateExecutionState("checking");
+      try {
+        await runtime.ensurePrivateExecutionReady?.();
+        if (!cancelled) setPrivateExecutionState("ready");
+      } catch {
+        if (!cancelled) setPrivateExecutionState("unavailable");
+      }
+    };
+
+    void checkReadiness(true);
+    const timer = window.setInterval(
+      () => void checkReadiness(false),
+      PRIVATE_EXECUTION_READINESS_POLL_MS,
+    );
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
+  }, [runtime, workspace]);
+
   const activePosition = positions.find(
     (position) => position.id === activePositionId,
   );
@@ -1289,6 +1335,11 @@ export function App({ runtime }: AppProps) {
     (tradeSide === "sell"
       ? holding
       : tradeDraft.amountIn <= privateBalanceAvailable);
+  const tradeFundingResting =
+    tradeSide === "buy" &&
+    tradeDraft.amountIn > privateBalanceAvailable &&
+    tradeDraft.amountIn <= privateBalance &&
+    privacyWaitRemaining > 0;
   const processEntries: ProcessLogEntry[] = [...executionLog, ...depositLog];
   const processStatus = processEntries.some((entry) => entry.status === "error")
     ? "error"
@@ -2834,6 +2885,9 @@ export function App({ runtime }: AppProps) {
       }
     } catch (reason) {
       const message = errorMessage(reason);
+      if (/relayer has insufficient Robinhood ETH/i.test(message)) {
+        setPrivateExecutionState("unavailable");
+      }
       if (tradeSide === "buy") failExecutionLog(message);
       let failedPosition: PrivatePosition | undefined;
       if (rootAddress && positionId) {
@@ -4328,6 +4382,75 @@ export function App({ runtime }: AppProps) {
                     </div>
                   </div>
 
+                  {tradeSide === "buy" &&
+                    restingPrivateBalance > 0n &&
+                    privacyWaitRemaining > 0 &&
+                    privateBalanceReadyAt && (
+                      <div
+                        className="pons-private-ready-window"
+                        role="status"
+                        aria-live="polite"
+                      >
+                        <span
+                          className="pons-private-ready-icon"
+                          aria-hidden="true"
+                        >
+                          <LockKeyIcon size={17} weight="duotone" />
+                        </span>
+                        <div className="pons-private-ready-copy">
+                          <span>Privacy window</span>
+                          <b>
+                            {formatUsdc(restingPrivateBalance)} USDC ready in{" "}
+                            {formatWait(privacyWaitRemaining)}
+                          </b>
+                          <small>
+                            Estimated ready around{" "}
+                            <time
+                              dateTime={new Date(
+                                privateBalanceReadyAt,
+                              ).toISOString()}
+                            >
+                              {formatReadyTime(privateBalanceReadyAt)}
+                            </time>
+                            . Waiting reduces deposit-to-buy timing correlation.
+                          </small>
+                        </div>
+                      </div>
+                    )}
+
+                  {runtime.mode === "live" &&
+                    privateExecutionState !== "ready" && (
+                      <div
+                        className="pons-private-ready-window relayer-status-window"
+                        data-state={privateExecutionState}
+                        role="status"
+                        aria-live="polite"
+                      >
+                        <span
+                          className="pons-private-ready-icon"
+                          aria-hidden="true"
+                        >
+                          <CurrencyCircleDollarIcon
+                            size={18}
+                            weight="duotone"
+                          />
+                        </span>
+                        <div className="pons-private-ready-copy">
+                          <span>Execution relayer</span>
+                          <b>
+                            {privateExecutionState === "checking"
+                              ? "Checking gas reserve…"
+                              : "Private buys temporarily paused"}
+                          </b>
+                          <small>
+                            {privateExecutionState === "checking"
+                              ? "Confirming that the shared relayer can safely submit a fresh-account transaction."
+                              : "The shared relayer needs Robinhood ETH. Retrying automatically; private funds will not move until it is ready."}
+                          </small>
+                        </div>
+                      </div>
+                    )}
+
                   <dl className="trade-facts">
                     <div>
                       <dt>Account</dt>
@@ -4353,14 +4476,27 @@ export function App({ runtime }: AppProps) {
                   {stage !== "complete" ? (
                     <button
                       className="button button-brand action-button"
-                      disabled={!tradeValid || busy}
+                      disabled={
+                        !tradeValid ||
+                        busy ||
+                        (runtime.mode === "live" &&
+                          privateExecutionState !== "ready")
+                      }
                       onClick={trade}
                     >
                       <span>
                         {busyLabel ??
                           (selectedMarket.privateTrading === false
                             ? "Graduated trading unavailable"
-                            : `${tradeSide === "buy" ? "Buy" : "Sell"} privately`)}
+                            : runtime.mode === "live" &&
+                                privateExecutionState === "checking"
+                              ? "Checking relayer…"
+                              : runtime.mode === "live" &&
+                                  privateExecutionState === "unavailable"
+                                ? "Relayer temporarily unavailable"
+                                : tradeFundingResting
+                                  ? `Buy in ${formatWait(privacyWaitRemaining)}`
+                                  : `${tradeSide === "buy" ? "Buy" : "Sell"} privately`)}
                       </span>
                       <b>{tradeSide === "buy" ? "↗" : "↙"}</b>
                     </button>

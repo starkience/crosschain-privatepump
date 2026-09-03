@@ -344,6 +344,18 @@
     font-size: clamp(28px, 9vw, 37px);
   }
 
+  .pons-private-ready-window {
+    grid-template-columns: 34px minmax(0, 1fr);
+    gap: 10px;
+    padding: 12px;
+  }
+
+  .pons-private-ready-icon {
+    width: 32px;
+    height: 32px;
+    border-radius: 10px;
+  }
+
   .pons-buy-card .action-button,
   .pons-buy-card .complete-actions .button {
     min-height: 54px;

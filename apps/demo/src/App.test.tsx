@@ -412,6 +412,63 @@ describe("Plank interface", () => {
     expect(runtime.deposit).not.toHaveBeenCalled();
   });
 
+  it("shows when newly deposited funds will become available in the buy card", async () => {
+    vi.spyOn(globalThis.crypto, "getRandomValues").mockImplementation(((
+      array: Uint32Array,
+    ) => {
+      array[0] = 0;
+      return array;
+    }) as typeof globalThis.crypto.getRandomValues);
+    const runtime = fixture("live", "explore");
+    vi.mocked(runtime.readPrivateBalance)
+      .mockResolvedValueOnce(510_000n)
+      .mockResolvedValueOnce(2_610_000n);
+    vi.mocked(runtime.readPendingDeposit)
+      .mockResolvedValueOnce(2_100_000n)
+      .mockResolvedValueOnce(2_100_000n)
+      .mockResolvedValueOnce(0n);
+
+    fireEvent.click(screen.getByRole("button", { name: /connect metamask/i }));
+    await screen.findByRole("button", { name: /metamask connected/i });
+    fireEvent.click(screen.getByRole("button", { name: /^deposit$/i }));
+    fireEvent.click(
+      await screen.findByRole("button", { name: /finish deposit/i }),
+    );
+    await screen.findByText("2.61 USDC");
+
+    fireEvent.click(screen.getByRole("button", { name: /ponsdonate/i }));
+    fireEvent.change(screen.getByRole("spinbutton", { name: /usdc amount/i }), {
+      target: { value: "2.5" },
+    });
+
+    expect(screen.getByText(/2\.1 USDC ready in 2m/i)).toBeTruthy();
+    expect(screen.getByText(/estimated ready around/i)).toBeTruthy();
+    expect(screen.getByText(/timing correlation/i)).toBeTruthy();
+    const buyButton = screen.getByRole("button", { name: /buy in 2m/i });
+    expect((buyButton as HTMLButtonElement).disabled).toBe(true);
+  });
+
+  it("blocks private buys while the Robinhood relayer lacks gas", async () => {
+    const ensurePrivateExecutionReady = vi.fn(async () => {
+      throw new Error(
+        "The PonsButPrivate relayer has insufficient Robinhood ETH for a fresh-account transaction. Private funds were not moved.",
+      );
+    });
+    fixture("live", "explore", { ensurePrivateExecutionReady });
+
+    fireEvent.click(screen.getByRole("button", { name: /ponsdonate/i }));
+
+    expect(
+      await screen.findByText(/private buys temporarily paused/i),
+    ).toBeTruthy();
+    expect(screen.getByText(/retrying automatically/i)).toBeTruthy();
+    const buyButton = screen.getByRole("button", {
+      name: /relayer temporarily unavailable/i,
+    }) as HTMLButtonElement;
+    expect(buyButton.disabled).toBe(true);
+    expect(ensurePrivateExecutionReady).toHaveBeenCalled();
+  });
+
   it("keeps an exhausted-prover deposit resumable without another public transfer", async () => {
     const runtime = fixture("live");
     vi.mocked(runtime.readPendingDeposit).mockResolvedValue(25_000_000n);

@@ -5774,6 +5774,99 @@ body {
   font-weight: 650;
 }
 
+.pons-private-ready-window {
+  position: relative;
+  display: grid;
+  grid-template-columns: 38px minmax(0, 1fr);
+  gap: 12px;
+  align-items: center;
+  padding: 13px 14px;
+  overflow: hidden;
+  border: 1px solid color-mix(in srgb, var(--purple) 48%, var(--border));
+  border-radius: 14px;
+  background: linear-gradient(
+    105deg,
+    color-mix(in srgb, var(--purple) 12%, var(--surface-muted)),
+    color-mix(in srgb, var(--surface) 92%, transparent)
+  );
+}
+
+.pons-private-ready-window::after {
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: 3px;
+  background: var(--purple);
+  content: "";
+}
+
+.pons-private-ready-icon {
+  display: grid;
+  place-items: center;
+  width: 36px;
+  height: 36px;
+  border: 1px solid color-mix(in srgb, var(--purple) 55%, transparent);
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--purple) 15%, var(--surface));
+  color: var(--purple);
+}
+
+.pons-private-ready-copy {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+}
+
+.pons-private-ready-copy > span {
+  color: var(--purple);
+  font-family: "IBM Plex Mono", monospace;
+  font-size: 8px;
+  font-weight: 600;
+  letter-spacing: 0.13em;
+  text-transform: uppercase;
+}
+
+.pons-private-ready-copy b {
+  color: var(--foreground);
+  font-size: 11px;
+  font-weight: 650;
+}
+
+.pons-private-ready-copy small {
+  color: var(--foreground-muted);
+  font-size: 8px;
+  line-height: 1.45;
+}
+
+.pons-private-ready-copy time {
+  color: var(--foreground-secondary);
+  font-variant-numeric: tabular-nums;
+}
+
+.relayer-status-window[data-state="unavailable"] {
+  border-color: color-mix(in srgb, var(--red) 52%, var(--border));
+  background: linear-gradient(
+    105deg,
+    color-mix(in srgb, var(--red) 10%, var(--surface-muted)),
+    color-mix(in srgb, var(--surface) 92%, transparent)
+  );
+}
+
+.relayer-status-window[data-state="unavailable"]::after {
+  background: var(--red);
+}
+
+.relayer-status-window[data-state="unavailable"] .pons-private-ready-icon {
+  border-color: color-mix(in srgb, var(--red) 52%, transparent);
+  background: color-mix(in srgb, var(--red) 12%, var(--surface));
+  color: var(--red);
+}
+
+.relayer-status-window[data-state="unavailable"]
+  .pons-private-ready-copy
+  > span {
+  color: var(--red);
+}
+
 .pons-buy-card .trade-facts {
   border-color: var(--border-subtle);
   border-radius: 14px;
