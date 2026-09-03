@@ -584,7 +584,10 @@ describe("live frontend runtime", () => {
 
     await runtime.prepareIdentity();
     await expect(runtime.fund(draft)).rejects.toThrow(/relayer underfunded/);
-    expect(preflightFunding).toHaveBeenCalledOnce();
+    await expect(runtime.ensurePrivateExecutionReady?.()).rejects.toThrow(
+      /relayer underfunded/,
+    );
+    expect(preflightFunding).toHaveBeenCalledTimes(2);
     expect(fundSession).not.toHaveBeenCalled();
   });
 

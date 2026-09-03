@@ -128,6 +128,8 @@ export interface LaunchpadRuntime {
   ): Promise<bigint>;
   readMarketMetadata?(token: TradeDraft["token"]): Promise<MarketMetadata>;
   recoverPositions?(signal?: AbortSignal): Promise<PrivatePosition[]>;
+  /** Optional server-side execution readiness check; it never moves funds. */
+  ensurePrivateExecutionReady?(): Promise<void>;
   quoteBuy(
     account: PrivateLaunchpadSession["account"],
     draft: TradeDraft,
@@ -587,6 +589,9 @@ export function createLiveRuntime<
             });
           },
         }
+      : {}),
+    ...(config.preflightFunding
+      ? { ensurePrivateExecutionReady: config.preflightFunding }
       : {}),
     async quoteBuy(account, draft) {
       if (!config.trade) throw new Error("launchpad trading is not configured");

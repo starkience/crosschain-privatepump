@@ -93,6 +93,7 @@ const FRESH_ACCOUNT_BALANCE_POLL_MS = 1_000;
 const ROBINHOOD_RPC_READ_ATTEMPTS = 4;
 const ROBINHOOD_RPC_RETRY_BASE_MS = 500;
 const AUTOMATIC_PRIVATE_RETURN_RETRY_DELAYS_MS = [5_000, 15_000, 45_000];
+const AUTOMATIC_PRIVATE_RETURN_STEADY_RETRY_MS = 5 * 60_000;
 const PORTFOLIO_READ_SPACING_MS = 150;
 const OFFICIAL_PONS_ORIGIN = "https://robinhood.ponslaunchpad.com";
 const USDG_ICON_URL =
@@ -2882,6 +2883,7 @@ export function App({ runtime }: AppProps) {
 
     try {
       await stopPositionRecovery();
+      await runtime.ensurePrivateExecutionReady?.();
       for (const position of pending) {
         patchPosition(rootAddress, position.id, { status: "returning" });
       }
@@ -2928,30 +2930,23 @@ export function App({ runtime }: AppProps) {
           lastError: recoveryMessage,
         });
       }
-      const retryDelay = AUTOMATIC_PRIVATE_RETURN_RETRY_DELAYS_MS[retryAttempt];
-      if (retryDelay !== undefined) {
-        const timer = window.setTimeout(() => {
-          automaticPrivateReturnTimers.current.delete(timer);
-          void automaticallyReturnPositionsToPool(
-            rootAddress,
-            pending,
-            retryAttempt + 1,
-          );
-        }, retryDelay);
-        automaticPrivateReturnTimers.current.add(timer);
-      }
+      const retryDelay =
+        AUTOMATIC_PRIVATE_RETURN_RETRY_DELAYS_MS[retryAttempt] ??
+        AUTOMATIC_PRIVATE_RETURN_STEADY_RETRY_MS;
+      const timer = window.setTimeout(() => {
+        automaticPrivateReturnTimers.current.delete(timer);
+        void automaticallyReturnPositionsToPool(
+          rootAddress,
+          pending,
+          retryAttempt + 1,
+        );
+      }, retryDelay);
+      automaticPrivateReturnTimers.current.add(timer);
       updateExecutionLog("reconcile", {
         status: "error",
-        detail:
-          retryDelay === undefined
-            ? `Automatic private return did not complete: ${recoveryMessage}`
-            : `Automatic private return is retrying in ${Math.round(retryDelay / 1_000)} seconds: ${recoveryMessage}`,
+        detail: `Automatic private return is retrying in ${Math.round(retryDelay / 1_000)} seconds: ${recoveryMessage}`,
       });
-      setError(
-        retryDelay === undefined
-          ? `The USDG remains safe in its saved fresh account. Automatic return will resume the next time this wallet connects: ${recoveryMessage}`
-          : undefined,
-      );
+      setError(undefined);
       setStage("complete");
     }
   }
