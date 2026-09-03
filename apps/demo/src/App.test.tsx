@@ -1,4 +1,5 @@
 import {
+  act,
   cleanup,
   fireEvent,
   render,
@@ -138,6 +139,46 @@ function fixture(
 }
 
 describe("Plank interface", () => {
+  it("stops tracking and resets a deposit hash that Robinhood never received", async () => {
+    vi.useFakeTimers();
+    try {
+      const droppedHash = `0x${"61".repeat(32)}`;
+      localStorage.setItem("privatepons-deposit-hash-v1", droppedHash);
+      const fetchImpl = vi.fn(async () =>
+        Response.json({ jsonrpc: "2.0", id: 1, result: null }),
+      );
+      vi.stubGlobal("fetch", fetchImpl);
+      const runtime = fixture("demo", "explore");
+
+      await act(async () => {
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+      for (let check = 1; check < 5; check += 1) {
+        await act(async () => {
+          await vi.advanceTimersByTimeAsync(5_000);
+        });
+      }
+
+      expect(
+        screen.getByText(
+          /wallet returned a hash that Robinhood never received/i,
+        ),
+      ).toBeTruthy();
+      expect(localStorage.getItem("privatepons-deposit-hash-v1")).toBeNull();
+      expect(runtime.reset).toHaveBeenCalledOnce();
+      expect(
+        (
+          screen.getByRole("textbox", {
+            name: /follow a robinhood transaction/i,
+          }) as HTMLInputElement
+        ).value,
+      ).toBe("");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("keeps wallet connection browser-extension only", async () => {
     fixture("live", "explore", {
       connectWallet: vi.fn(async () => {
@@ -694,12 +735,13 @@ describe("Plank interface", () => {
     const submittedHash = `0x${"7".repeat(64)}`;
     vi.stubGlobal(
       "fetch",
-      vi.fn(async () => ({
-        ok: true,
-        json: async () => ({
+      vi.fn(async () =>
+        Response.json({
+          jsonrpc: "2.0",
+          id: 1,
           result: { status: "0x1", blockNumber: "0x2e0e195" },
         }),
-      })),
+      ),
     );
     vi.mocked(runtime.deposit).mockImplementation(
       async (amount, onStep, onSubmitted) => {

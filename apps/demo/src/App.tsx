@@ -95,6 +95,7 @@ const ROBINHOOD_RPC_READ_ATTEMPTS = 4;
 const ROBINHOOD_RPC_RETRY_BASE_MS = 500;
 const PRIVATE_BALANCE_READ_ATTEMPTS = 4;
 const PRIVATE_BALANCE_RETRY_BASE_MS = 500;
+const ROBINHOOD_MISSING_TRANSACTION_LIMIT = 5;
 const AUTOMATIC_PRIVATE_RETURN_RETRY_DELAYS_MS = [5_000, 15_000, 45_000];
 const AUTOMATIC_PRIVATE_RETURN_STEADY_RETRY_MS = 5 * 60_000;
 const PORTFOLIO_READ_SPACING_MS = 150;
@@ -1746,41 +1747,100 @@ export function App({ runtime }: AppProps) {
     if (!TRANSACTION_HASH_PATTERN.test(trackedDepositHash)) return undefined;
     let cancelled = false;
     let pollTimer: number | undefined;
+    let missingTransactionChecks = 0;
+
+    const requestRobinhood = async <T,>(method: string): Promise<T> => {
+      const response = await fetch(ROBINHOOD_RPC_URL, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          jsonrpc: "2.0",
+          id: 1,
+          method,
+          params: [trackedDepositHash],
+        }),
+      });
+      const text = await response.text();
+      let payload: { result?: T | null; error?: { message?: string } };
+      try {
+        payload = JSON.parse(text) as typeof payload;
+      } catch {
+        throw new Error(
+          `Robinhood RPC returned an empty response (HTTP ${response.status})`,
+        );
+      }
+      if (!response.ok || payload.error) {
+        throw new Error(
+          payload.error?.message ?? "Robinhood RPC lookup failed",
+        );
+      }
+      return payload.result as T;
+    };
 
     const checkReceipt = async () => {
       try {
-        const response = await fetch(ROBINHOOD_RPC_URL, {
-          method: "POST",
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify({
-            jsonrpc: "2.0",
-            id: 1,
-            method: "eth_getTransactionReceipt",
-            params: [trackedDepositHash],
-          }),
-        });
-        const payload = (await response.json()) as {
-          result?: { status?: string; blockNumber?: string } | null;
-          error?: { message?: string };
-        };
+        const receipt = await requestRobinhood<{
+          status?: string;
+          blockNumber?: string;
+        }>("eth_getTransactionReceipt");
         if (cancelled) return;
-        if (!response.ok || payload.error) {
-          throw new Error(payload.error?.message ?? "receipt lookup failed");
-        }
-        if (!payload.result) {
+        if (!receipt) {
+          const transaction = await requestRobinhood<Record<string, unknown>>(
+            "eth_getTransactionByHash",
+          );
+          if (cancelled) return;
+          if (transaction) {
+            missingTransactionChecks = 0;
+          } else {
+            missingTransactionChecks += 1;
+          }
+          if (missingTransactionChecks >= ROBINHOOD_MISSING_TRANSACTION_LIMIT) {
+            const detail =
+              "The wallet returned a hash that Robinhood never received. The transfer was dropped; Relay, Circle, and STRK20 did not start.";
+            updateDepositLog("source", {
+              status: "error",
+              detail,
+              transactionHash: trackedDepositHash,
+              explorerUrl: `${ROBINHOOD_EXPLORER_URL}/tx/${trackedDepositHash}`,
+            });
+            updateDepositLog("relay", {
+              status: "pending",
+              detail: "Not started because the Robinhood transfer was dropped.",
+            });
+            updateDepositLog("register", {
+              status: "pending",
+              detail: "Not started.",
+            });
+            updateDepositLog("deposit", {
+              status: "pending",
+              detail: "No private balance note was created.",
+            });
+            setTrackedDepositHash("");
+            setTrackHashDraft("");
+            setReceiptCheckError(undefined);
+            setBalanceStep(undefined);
+            setStage("idle");
+            setIdentity(undefined);
+            setError(detail);
+            runtime.reset();
+            localStorage.removeItem(DEPOSIT_HASH_STORAGE_KEY);
+            return;
+          }
           updateDepositLog("source", {
             status: "running",
-            detail: "Submitted · waiting for a Robinhood block confirmation.",
+            detail: transaction
+              ? "Pending in Robinhood · waiting for a block confirmation."
+              : `Broadcast not visible yet · checking propagation (${missingTransactionChecks}/${ROBINHOOD_MISSING_TRANSACTION_LIMIT}).`,
             transactionHash: trackedDepositHash,
             explorerUrl: `${ROBINHOOD_EXPLORER_URL}/tx/${trackedDepositHash}`,
           });
           pollTimer = window.setTimeout(checkReceipt, 5_000);
           return;
         }
-        const blockNumber = payload.result.blockNumber
-          ? Number.parseInt(payload.result.blockNumber, 16).toLocaleString()
+        const blockNumber = receipt.blockNumber
+          ? Number.parseInt(receipt.blockNumber, 16).toLocaleString()
           : "confirmed block";
-        const succeeded = payload.result.status === "0x1";
+        const succeeded = receipt.status === "0x1";
         updateDepositLog("source", {
           status: succeeded ? "done" : "error",
           detail: succeeded
@@ -1804,7 +1864,7 @@ export function App({ runtime }: AppProps) {
       cancelled = true;
       if (pollTimer !== undefined) window.clearTimeout(pollTimer);
     };
-  }, [trackedDepositHash, updateDepositLog]);
+  }, [runtime, trackedDepositHash, updateDepositLog]);
 
   function restorePositions(
     rootAddress: PrivateLaunchpadSession["account"],
@@ -3211,7 +3271,10 @@ export function App({ runtime }: AppProps) {
     automatic = false,
   ) {
     if (!rootAddress) {
-      return { success: false, error: "Connect MetaMask to resume the return." };
+      return {
+        success: false,
+        error: "Connect MetaMask to resume the return.",
+      };
     }
     setError(undefined);
     try {
