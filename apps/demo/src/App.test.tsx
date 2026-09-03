@@ -138,30 +138,41 @@ function fixture(
 }
 
 describe("Plank interface", () => {
-  it("offers MetaMask mobile when the injected extension does not respond", async () => {
-    const connectWalletFallback = vi.fn(
-      async () =>
-        "0x1111111111111111111111111111111111111111" as PrivateLaunchpadSession["account"],
-    );
+  it("keeps wallet connection browser-extension only", async () => {
     fixture("live", "explore", {
       connectWallet: vi.fn(async () => {
         throw new Error("MetaMask did not respond");
       }),
-      connectWalletFallback,
     });
 
-    expect(
-      screen.getByRole("button", { name: /connect with metamask mobile/i }),
-    ).toBeTruthy();
     fireEvent.click(
       screen.getByRole("button", { name: /connect metamask extension/i }),
     );
-    const fallback = await screen.findByRole("button", {
-      name: /use metamask mobile/i,
-    });
-    fireEvent.click(fallback);
 
-    await waitFor(() => expect(connectWalletFallback).toHaveBeenCalledOnce());
+    expect(await screen.findByText(/MetaMask did not respond/i)).toBeTruthy();
+    expect(screen.queryByText(/MetaMask mobile/i)).toBeNull();
+  });
+
+  it("retries a transient Starknet balance read without disconnecting MetaMask", async () => {
+    const runtime = fixture("live", "explore");
+    vi.mocked(runtime.readPrivateBalance)
+      .mockRejectedValueOnce(new Error("empty Starknet RPC response"))
+      .mockResolvedValueOnce(3_200_000n);
+
+    fireEvent.click(
+      screen.getByRole("button", { name: /connect metamask extension/i }),
+    );
+
+    expect(
+      await screen.findByRole("button", { name: /metamask connected/i }),
+    ).toBeTruthy();
+    await waitFor(() =>
+      expect(
+        document.querySelector(".pons-private-balance")?.textContent,
+      ).toContain("3.2 USDC"),
+    );
+    expect(runtime.readPrivateBalance).toHaveBeenCalledTimes(2);
+    expect(screen.queryByText(/empty Starknet RPC response/i)).toBeNull();
   });
 
   it("keeps primary actions available in the mobile navigation dock", () => {
@@ -1268,7 +1279,9 @@ describe("Plank interface", () => {
     );
     fireEvent.click(screen.getByRole("button", { name: /sell privately/i }));
 
-    expect(await screen.findByText(/24\.2 USDC returned/i)).toBeTruthy();
+    expect(await screen.findAllByText(/24\.2 USDC returned/i)).not.toHaveLength(
+      0,
+    );
     expect(runtime.buy).toHaveBeenCalledOnce();
     expect(runtime.sell).toHaveBeenCalledOnce();
     expect(runtime.readAccountTokenBalance).toHaveBeenCalledWith(
@@ -1295,6 +1308,41 @@ describe("Plank interface", () => {
         `privatepons-private-positions-v2:8453:0x${"aa".repeat(32)}`,
       ),
     ).toContain('"status":"closed"');
+    const sellLog = localStorage.getItem("privatepons-execution-process-v1");
+    expect(sellLog).toContain('"operation":"Private sell"');
+    expect(sellLog).toContain('"title":"Policy-relayer broadcast"');
+    expect(sellLog).toContain('"transactionHash":"0xsell"');
+    expect(sellLog).toContain('"title":"Private proceeds return"');
+  });
+
+  it("records an interrupted sell return as recoverable in the transaction logger", async () => {
+    const runtime = fixture("demo", "explore", {
+      returnToPool: vi.fn(async () => {
+        throw new Error(
+          "Failed to execute 'json' on 'Response': Unexpected end of JSON input",
+        );
+      }),
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: /night market/i }));
+    fireEvent.click(screen.getByRole("button", { name: /buy privately/i }));
+    fireEvent.click(
+      await screen.findByRole("button", { name: /sell this position/i }),
+    );
+    fireEvent.click(screen.getByRole("button", { name: /sell privately/i }));
+
+    expect(
+      await screen.findAllByText(/RPC gateway returned an empty response/i),
+    ).not.toHaveLength(0);
+    const scope = `0x${"aa".repeat(32)}`;
+    await waitFor(() => {
+      expect(
+        localStorage.getItem(`privatepons-private-positions-v2:8453:${scope}`),
+      ).toContain('"status":"return-failed"');
+      expect(
+        localStorage.getItem("privatepons-execution-process-v1"),
+      ).toContain('"status":"error"');
+    });
   });
 
   it("shows the live token holding and sells a selected percentage", async () => {
@@ -1427,6 +1475,44 @@ describe("Plank interface", () => {
     await waitFor(() => {
       const stored = localStorage.getItem(key) ?? "";
       expect(stored.match(/\"status\":\"closed\"/g)).toHaveLength(2);
+    });
+  });
+
+  it("resumes a failed post-sell return through its deterministic staging account", async () => {
+    const scope = `0x${"aa".repeat(32)}`;
+    const key = `privatepons-private-positions-v2:8453:${scope}`;
+    localStorage.setItem(
+      key,
+      JSON.stringify({
+        version: 1,
+        positions: [
+          {
+            id: "sell-return",
+            kind: "trade",
+            name: "PonsDonate",
+            symbol: "PONSDONATE",
+            token: LIVE_PONS_TOKEN,
+            accountIndex: 7,
+            account: session.account,
+            status: "return-failed",
+            usdcCommitted: "2233200",
+            tokenAmount: "0",
+            sellTxHash: `0x${"66".repeat(32)}`,
+            lastError: "Unexpected end of JSON input",
+            createdAt: 1,
+            updatedAt: 2,
+          },
+        ],
+      }),
+    );
+    const runtime = fixture("live", "explore");
+
+    fireEvent.click(screen.getByRole("button", { name: /connect metamask/i }));
+
+    await waitFor(() => expect(runtime.returnToPool).toHaveBeenCalledOnce());
+    expect(runtime.returnMultipleToPool).not.toHaveBeenCalled();
+    await waitFor(() => {
+      expect(localStorage.getItem(key)).toContain('"status":"closed"');
     });
   });
 });

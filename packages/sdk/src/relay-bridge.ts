@@ -33,6 +33,8 @@ export const ROBINHOOD_USDG = getAddress(
 const TRANSFER_SELECTOR = "0xa9059cbb";
 const DEFAULT_CURSOR_KEY = "private-pons.relay-funding.v1";
 const DEFAULT_PRIVATE_TRANSFER_FEE_BUFFER = 500_000n;
+const DERIVED_RPC_READ_ATTEMPTS = 4;
+const DERIVED_RPC_RETRY_BASE_MS = 250;
 
 export interface RelayBridgeQuote {
   requestId: string;
@@ -335,11 +337,6 @@ export function createRelayReturnTransport(
         "official privacy bridge build lacks the private S2 return exports",
       );
     }
-    if (args.amount <= feeBuffer) {
-      throw new Error(
-        `private return needs more than ${feeBuffer} base units to reserve the STRK20 transfer fee`,
-      );
-    }
     const s2Signature = derivePrivateReturnSignature(
       args.signature as Hex,
       args.session.accountIndex,
@@ -354,58 +351,75 @@ export function createRelayReturnTransport(
       rpcUrl: arbitrumRpcUrl,
     });
 
-    args.onStep?.(
-      "relay-return",
-      "running",
-      "routing Pons USDG to the private return account",
-    );
-    let quote: RelayBridgeQuote;
-    try {
-      quote = await options.relay.quoteRobinhoodUsdgToArbitrumUsdc({
-        user: args.session.account,
-        recipient: staging.address,
-        refundTo: args.session.owner,
-        amount: args.amount,
-      });
-    } catch (error) {
-      if (isRelayAmountTooLow(error)) {
-        throw new Error(
-          `Relay cannot return ${formatSixDecimalAmount(args.amount)} USDG right now because the amount is too low to cover swap fees and the Arbitrum gas top-up. The funds remain in the fresh Robinhood account; retry when Relay fees are lower.`,
-          { cause: error },
-        );
-      }
-      throw error;
-    }
-    if (BigInt(quote.depositTransaction.value) !== 0n) {
-      throw new Error("Relay return unexpectedly requires native value");
-    }
-    const sourceTx = await args.submitCalls(
-      [
-        {
-          target: quote.depositTransaction.to,
-          value: 0n,
-          data: quote.depositTransaction.data,
-        },
-      ],
-      {
-        relayRequestId: quote.requestId,
-        relayQuoteAttestation: requiredQuoteAttestation(quote),
-      },
-    );
-    const confirmation = await args.waitForExecution(sourceTx);
-    if (confirmation.status !== "success") {
-      throw new Error("Robinhood Relay deposit reverted");
-    }
-    await options.relay.waitForSuccess(quote.requestId, (status) =>
+    let delivered = 0n;
+    if (args.amount > feeBuffer) {
       args.onStep?.(
         "relay-return",
-        status.succeeded ? "done" : "running",
-        status.status,
-      ),
-    );
-    const delivered = await readUsdcBalance(localProvider, staging.address);
-    if (delivered < quote.minimumOutputAmount) {
-      throw new Error("Relay return delivered less Arbitrum USDC than quoted");
+        "running",
+        "routing Pons USDG to the private return account",
+      );
+      let quote: RelayBridgeQuote;
+      try {
+        quote = await options.relay.quoteRobinhoodUsdgToArbitrumUsdc({
+          user: args.session.account,
+          recipient: staging.address,
+          refundTo: args.session.owner,
+          amount: args.amount,
+        });
+      } catch (error) {
+        if (isRelayAmountTooLow(error)) {
+          throw new Error(
+            `Relay cannot return ${formatSixDecimalAmount(args.amount)} USDG right now because the amount is too low to cover swap fees and the Arbitrum gas top-up. The funds remain in the fresh Robinhood account; retry when Relay fees are lower.`,
+            { cause: error },
+          );
+        }
+        throw error;
+      }
+      if (BigInt(quote.depositTransaction.value) !== 0n) {
+        throw new Error("Relay return unexpectedly requires native value");
+      }
+      const sourceTx = await args.submitCalls(
+        [
+          {
+            target: quote.depositTransaction.to,
+            value: 0n,
+            data: quote.depositTransaction.data,
+          },
+        ],
+        {
+          relayRequestId: quote.requestId,
+          relayQuoteAttestation: requiredQuoteAttestation(quote),
+        },
+      );
+      const confirmation = await args.waitForExecution(sourceTx);
+      if (confirmation.status !== "success") {
+        throw new Error("Robinhood Relay deposit reverted");
+      }
+      await options.relay.waitForSuccess(quote.requestId, (status) =>
+        args.onStep?.(
+          "relay-return",
+          status.succeeded ? "done" : "running",
+          status.status,
+        ),
+      );
+      delivered = await readUsdcBalance(localProvider, staging.address);
+      if (delivered < quote.minimumOutputAmount) {
+        throw new Error(
+          "Relay return delivered less Arbitrum USDC than quoted",
+        );
+      }
+    } else {
+      delivered = await readUsdcBalance(localProvider, staging.address);
+      if (delivered <= feeBuffer) {
+        throw new Error(
+          `No recoverable return was found: the Robinhood source has ${formatSixDecimalAmount(args.amount)} USDG and the isolated Arbitrum staging account has ${formatSixDecimalAmount(delivered)} USDC.`,
+        );
+      }
+      args.onStep?.(
+        "relay-return",
+        "done",
+        `resuming ${formatSixDecimalAmount(delivered)} USDC already delivered to the isolated return account`,
+      );
     }
 
     args.onStep?.(
@@ -649,6 +663,8 @@ export function derivePrivateReturnSignature(
 export function createDerivedEip1193Provider(args: {
   privateKey: Hex;
   rpcUrl: string;
+  fetch?: typeof fetch;
+  sleep?: (milliseconds: number) => Promise<void>;
 }): Eip1193Provider {
   const account = privateKeyToAccount(args.privateKey);
   const wallet = createWalletClient({
@@ -656,6 +672,11 @@ export function createDerivedEip1193Provider(args: {
     chain: arbitrum,
     transport: http(args.rpcUrl),
   });
+  const fetchImpl = args.fetch ?? fetch;
+  const sleep =
+    args.sleep ??
+    ((milliseconds: number) =>
+      new Promise<void>((resolve) => setTimeout(resolve, milliseconds)));
   let requestId = 0;
   return {
     async request(payload) {
@@ -704,26 +725,49 @@ export function createDerivedEip1193Provider(args: {
             : {}),
         });
       }
-      const response = await fetch(args.rpcUrl, {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({
-          jsonrpc: "2.0",
-          id: ++requestId,
-          method: payload.method,
-          ...(payload.params === undefined ? {} : { params: payload.params }),
-        }),
-      });
-      const body = object(await response.json(), "Arbitrum RPC response");
-      if (!response.ok || body.error) {
-        const error = objectOrNull(body.error);
-        throw new Error(
-          typeof error?.message === "string"
-            ? error.message
-            : `Arbitrum RPC ${payload.method} failed`,
-        );
+      let lastError: unknown;
+      for (let attempt = 0; attempt < DERIVED_RPC_READ_ATTEMPTS; attempt += 1) {
+        try {
+          const response = await fetchImpl(args.rpcUrl, {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({
+              jsonrpc: "2.0",
+              id: ++requestId,
+              method: payload.method,
+              ...(payload.params === undefined
+                ? {}
+                : { params: payload.params }),
+            }),
+          });
+          const text = await response.text();
+          let parsed: unknown;
+          try {
+            parsed = JSON.parse(text) as unknown;
+          } catch {
+            throw new Error(
+              `Arbitrum RPC ${payload.method} returned an empty or invalid JSON response (HTTP ${response.status})`,
+            );
+          }
+          const body = object(parsed, "Arbitrum RPC response");
+          if (!response.ok || body.error) {
+            const error = objectOrNull(body.error);
+            const detail =
+              typeof error?.message === "string"
+                ? error.message
+                : typeof body.error === "string"
+                  ? body.error
+                  : undefined;
+            throw new Error(detail ?? `Arbitrum RPC ${payload.method} failed`);
+          }
+          return body.result;
+        } catch (error) {
+          lastError = error;
+          if (attempt + 1 >= DERIVED_RPC_READ_ATTEMPTS) throw error;
+          await sleep(DERIVED_RPC_RETRY_BASE_MS * 2 ** attempt);
+        }
       }
-      return body.result;
+      throw lastError;
     },
   };
 }

@@ -5,6 +5,7 @@ import {
   ROBINHOOD_USDG,
   createRelayBatchReturnTransport,
   createRelayBridgeClient,
+  createDerivedEip1193Provider,
   createRelayFundingTransport,
   createRelayReturnTransport,
   derivePrivateReturnSignature,
@@ -211,6 +212,87 @@ describe("Relay cross-chain bridge", () => {
     expect(first).not.toBe(root);
     expect(first).not.toBe(second);
     expect(derivePrivateReturnSignature(root, 1)).toBe(first);
+  });
+
+  it("retries an empty Arbitrum RPC response before parsing JSON", async () => {
+    const fetchImpl = vi
+      .fn()
+      .mockResolvedValueOnce(new Response("", { status: 200 }))
+      .mockResolvedValueOnce(json({ jsonrpc: "2.0", id: 2, result: "0x2a" }));
+    const provider = createDerivedEip1193Provider({
+      privateKey: `0x${"12".repeat(32)}`,
+      rpcUrl: "/arbitrum-rpc",
+      fetch: fetchImpl,
+      sleep: async () => undefined,
+    });
+
+    await expect(
+      provider.request({ method: "eth_blockNumber", params: [] }),
+    ).resolves.toBe("0x2a");
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+  });
+
+  it("resumes USDC already delivered to the isolated return account", async () => {
+    const quoteReturn = vi.fn();
+    const moveIntoPool = vi.fn(async () => ({
+      deposited: true,
+      depositedNetWei: 1_500_000n,
+    }));
+    const sendPrivateToStarknet = vi.fn(async () => ({
+      txHash: "0xprivate-merge",
+      recipient: "0x1234",
+      amount: 1_000_000n,
+      confirmed: true,
+    }));
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => json({ jsonrpc: "2.0", id: 1, result: "0x16e360" })),
+    );
+    try {
+      const transport = createRelayReturnTransport({
+        relay: {
+          quoteRobinhoodUsdgToArbitrumUsdc: quoteReturn,
+          quoteArbitrumUsdcToRobinhoodUsdg: vi.fn(),
+          getStatus: vi.fn(),
+          waitForSuccess: vi.fn(),
+        },
+      });
+      const submitCalls = vi.fn();
+      const result = await transport({
+        bridge: {
+          deriveStarknetAddress: vi.fn(() => "0x1234"),
+          sendPrivateToStarknet,
+          deriveEvmOwner: vi.fn(() => ({
+            address: OWNER,
+            privateKey: `0x${"12".repeat(32)}`,
+          })),
+          moveIntoPool,
+        } as unknown as PrivacyBridgeEngine,
+        signature: `0x${"34".repeat(65)}`,
+        session: {
+          owner: OWNER,
+          account: ACCOUNT,
+          accountIndex: 2,
+          channel: "pons-private-v1",
+        },
+        connectedEvmAddress: CONNECTED,
+        amount: 0n,
+        submitCalls,
+        waitForExecution: vi.fn(),
+      });
+
+      expect(result.amountReturned).toBe(1_000_000n);
+      expect(quoteReturn).not.toHaveBeenCalled();
+      expect(submitCalls).not.toHaveBeenCalled();
+      expect(moveIntoPool).toHaveBeenCalledWith(
+        expect.objectContaining({ amountWei: 1_500_000n }),
+      );
+      expect(sendPrivateToStarknet).toHaveBeenCalledWith(
+        expect.objectContaining({ amount: 1_000_000n }),
+      );
+    } finally {
+      vi.unstubAllGlobals();
+    }
   });
 
   it("carries the Relay request ID into the policy-relayer return batch", async () => {

@@ -291,23 +291,6 @@ a {
   cursor: pointer;
 }
 
-.wallet-error-strip .wallet-error-fallback {
-  min-height: 24px;
-  padding: 4px 9px;
-  border: 1px solid color-mix(in srgb, var(--red) 55%, var(--border));
-  border-radius: 999px;
-  background: var(--surface);
-  color: currentColor;
-  font: inherit;
-  white-space: nowrap;
-  cursor: pointer;
-}
-
-.wallet-error-strip .wallet-error-fallback:disabled {
-  cursor: wait;
-  opacity: 0.6;
-}
-
 .network-status i,
 .terminal-meta i,
 .balance-card-head b i {
@@ -4632,11 +4615,6 @@ a {
     width: 36px;
     height: 36px;
   }
-
-  .wallet-error-strip .wallet-error-fallback {
-    min-height: 36px;
-    padding-inline: 12px;
-  }
 }
 
 @media (max-width: 560px) {
@@ -5090,18 +5068,6 @@ body {
 
 .pons-nav-actions .wallet-connect[data-connected="false"] .wallet-connect-icon {
   display: none;
-}
-
-.pons-nav-actions .wallet-connect-mobile[data-connected="false"] {
-  border-color: var(--border);
-  background: var(--surface);
-  color: var(--foreground-secondary);
-}
-
-.pons-nav-actions
-  .wallet-connect-mobile[data-connected="false"]
-  .wallet-connect-icon {
-  display: block;
 }
 
 .pons-nav-actions .nav-icon {

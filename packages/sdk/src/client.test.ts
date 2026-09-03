@@ -7,6 +7,7 @@ import type {
   BridgeReturnResult,
   PrivacyBridgeEngine,
   RelayExecutionRequest,
+  SessionReturnTransport,
 } from "./types.js";
 
 const PRIVATE_KEY = `0x${"11".repeat(32)}` as Hex;
@@ -19,7 +20,7 @@ const CONNECTED = "0x5555555555555555555555555555555555555555" as Address;
 const RELAYER = "0x6666666666666666666666666666666666666666" as Address;
 const TX_HASH = `0x${"77".repeat(32)}` as Hash;
 
-function fixture(balance = 100n) {
+function fixture(balance = 100n, returnTransport?: SessionReturnTransport) {
   const relayRequests: RelayExecutionRequest[] = [];
   const moveIntoPool = vi.fn(async (args) => ({
     depositedNetWei: args.amountWei,
@@ -86,6 +87,7 @@ function fixture(balance = 100n) {
     usdc: USDC,
     publicClient,
     bridge,
+    ...(returnTransport ? { returnTransport } : {}),
     relay: async (request) => {
       relayRequests.push(request);
       return TX_HASH;
@@ -324,5 +326,27 @@ describe("private launchpad client", () => {
         fee: { token: USDC, amount: 1n, recipient: RELAYER },
       }),
     ).rejects.toThrow(/maximum after relayer fee is 9/);
+  });
+
+  it("lets the return transport inspect staging after the source account is empty", async () => {
+    const resumeReturn = vi.fn(async () => ({
+      amountReturned: 1_000_000n,
+      claimTxHash: "claim",
+      ranFreshBurn: true,
+      alreadyClaimed: false,
+    }));
+    const { client } = fixture(0n, resumeReturn);
+    const session = await client.deriveSession("app-signature", 2);
+
+    await expect(
+      client.returnSession({
+        signature: "app-signature",
+        session,
+        connectedEvmAddress: CONNECTED,
+      }),
+    ).resolves.toMatchObject({ amountReturned: 1_000_000n });
+    expect(resumeReturn).toHaveBeenCalledWith(
+      expect.objectContaining({ amount: 0n }),
+    );
   });
 });

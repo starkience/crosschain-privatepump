@@ -14,7 +14,6 @@ import { ArrowRightIcon } from "@phosphor-icons/react/dist/csr/ArrowRight";
 import { CaretDownIcon } from "@phosphor-icons/react/dist/csr/CaretDown";
 import { CoinsIcon } from "@phosphor-icons/react/dist/csr/Coins";
 import { CurrencyCircleDollarIcon } from "@phosphor-icons/react/dist/csr/CurrencyCircleDollar";
-import { DeviceMobileIcon } from "@phosphor-icons/react/dist/csr/DeviceMobile";
 import { GiftIcon } from "@phosphor-icons/react/dist/csr/Gift";
 import { GlobeSimpleIcon } from "@phosphor-icons/react/dist/csr/GlobeSimple";
 import { ImageIcon } from "@phosphor-icons/react/dist/csr/Image";
@@ -94,6 +93,8 @@ const FRESH_ACCOUNT_BALANCE_READS = 20;
 const FRESH_ACCOUNT_BALANCE_POLL_MS = 1_000;
 const ROBINHOOD_RPC_READ_ATTEMPTS = 4;
 const ROBINHOOD_RPC_RETRY_BASE_MS = 500;
+const PRIVATE_BALANCE_READ_ATTEMPTS = 4;
+const PRIVATE_BALANCE_RETRY_BASE_MS = 500;
 const AUTOMATIC_PRIVATE_RETURN_RETRY_DELAYS_MS = [5_000, 15_000, 45_000];
 const AUTOMATIC_PRIVATE_RETURN_STEADY_RETRY_MS = 5 * 60_000;
 const PORTFOLIO_READ_SPACING_MS = 150;
@@ -583,6 +584,66 @@ function createExecutionLog(
   ];
 }
 
+function createSellExecutionLog(
+  amount: bigint,
+  symbol: string,
+): ExecutionLogEntry[] {
+  const now = Date.now();
+  const operation = "Private sell";
+  return [
+    {
+      id: "identity",
+      operation,
+      title: "Position account identity",
+      status: "running",
+      detail:
+        "Restoring the existing onchain-separated account without logging secret material.",
+      updatedAt: now,
+    },
+    {
+      id: "bridge",
+      operation,
+      title: "Token balance",
+      status: "pending",
+      detail: `Verifying ${formatTokenAmount(amount)} $${symbol} in the position account.`,
+      updatedAt: now,
+    },
+    {
+      id: "funding-relay",
+      operation,
+      title: "Pons sell quote",
+      status: "pending",
+      detail: "The live curve quote has not been requested yet.",
+      updatedAt: now,
+    },
+    {
+      id: "execution",
+      operation,
+      title: "Policy-relayer broadcast",
+      status: "pending",
+      detail: "No sell transaction has been broadcast yet.",
+      updatedAt: now,
+    },
+    {
+      id: "confirmation",
+      operation,
+      title: "Robinhood confirmation",
+      status: "pending",
+      detail: "Waiting for a sell transaction hash.",
+      updatedAt: now,
+    },
+    {
+      id: "reconcile",
+      operation,
+      title: "Private proceeds return",
+      status: "pending",
+      detail:
+        "After confirmation, sale proceeds will return automatically to Private Balance.",
+      updatedAt: now,
+    },
+  ];
+}
+
 function loadDepositLog(): DepositLogEntry[] {
   try {
     const value = localStorage.getItem(DEPOSIT_LOG_STORAGE_KEY);
@@ -685,6 +746,13 @@ function errorMessage(error: unknown): string {
   ) {
     return "The StarkWare prover did not return before the safe request deadline. Your public transfer is already complete and the USDC remains staged on Starknet. Do not deposit again; use Finish deposit to resume the private step.";
   }
+  if (
+    /Unexpected end of JSON input|empty or invalid JSON response|returned non-JSON HTTP/i.test(
+      message,
+    )
+  ) {
+    return "A blockchain RPC gateway returned an empty response. The saved operation remains recoverable; PonsButPrivate will retry safe reads without submitting a duplicate transaction.";
+  }
   const requestSuffix =
     error instanceof RelayerRejectedError && error.requestId
       ? ` Reference: ${error.requestId}.`
@@ -748,7 +816,9 @@ function isCertainPreBroadcastRejection(error: unknown): boolean {
 }
 
 function needsAutomaticPrivateReturn(position: PrivatePosition): boolean {
-  if (["return-failed", "returning"].includes(position.status)) return true;
+  if (["return-failed", "returning"].includes(position.status)) {
+    return !position.sellTxHash;
+  }
   if (position.status === "buying" && !position.buyTxHash) return true;
   if (position.status === "launching" && !position.launchTxHash) return true;
   return (
@@ -757,6 +827,13 @@ function needsAutomaticPrivateReturn(position: PrivatePosition): boolean {
     /before broadcast|no (?:Robinhood |buy )?transaction was (?:created|broadcast)|transaction reverted|buy reverted|launch reverted/i.test(
       position.lastError,
     )
+  );
+}
+
+function needsAutomaticSellReturn(position: PrivatePosition): boolean {
+  return (
+    ["return-failed", "returning"].includes(position.status) &&
+    Boolean(position.sellTxHash)
   );
 }
 
@@ -789,6 +866,25 @@ function readAccountTokenBalanceWithRetry(
   return retryRobinhoodRpcRead(() =>
     runtime.readAccountTokenBalance(account, token),
   );
+}
+
+async function retryPrivateBalanceRead<T>(read: () => Promise<T>): Promise<T> {
+  let lastError: unknown;
+  for (let attempt = 0; attempt < PRIVATE_BALANCE_READ_ATTEMPTS; attempt += 1) {
+    try {
+      return await read();
+    } catch (error) {
+      lastError = error;
+      if (attempt + 1 >= PRIVATE_BALANCE_READ_ATTEMPTS) throw error;
+      await new Promise((resolve) =>
+        window.setTimeout(
+          resolve,
+          PRIVATE_BALANCE_RETRY_BASE_MS * 2 ** attempt,
+        ),
+      );
+    }
+  }
+  throw lastError;
 }
 
 function portfolioReadError(error: unknown): string {
@@ -1056,9 +1152,6 @@ export function App({ runtime }: AppProps) {
   const [connectedWallet, setConnectedWallet] =
     useState<PrivateLaunchpadSession["account"]>();
   const [walletConnecting, setWalletConnecting] = useState(false);
-  const [walletConnectionRoute, setWalletConnectionRoute] = useState<
-    "extension" | "mobile"
-  >();
   const [walletSigning, setWalletSigning] = useState(false);
   const [walletError, setWalletError] = useState<string>();
   const walletConnectionAttempt = useRef(0);
@@ -1283,6 +1376,9 @@ export function App({ runtime }: AppProps) {
       : (activeTokenBalance * BigInt(sellPercentage)) / 100n;
   const holding = Boolean(
     activePosition &&
+    !["selling", "returning", "return-failed", "closed"].includes(
+      activePosition.status,
+    ) &&
     (activePosition.status === "held" || activeTokenBalance > 0n),
   );
 
@@ -1574,6 +1670,15 @@ export function App({ runtime }: AppProps) {
       setExecutionLog(
         createExecutionLog(operation, amount, symbol, alreadyFunded),
       );
+      setTransactionMonitorView("execution");
+      setTransactionMonitorOpen(true);
+    },
+    [],
+  );
+
+  const beginSellExecutionLog = useCallback(
+    (amount: bigint, symbol: string) => {
+      setExecutionLog(createSellExecutionLog(amount, symbol));
       setTransactionMonitorView("execution");
       setTransactionMonitorOpen(true);
     },
@@ -2011,29 +2116,12 @@ export function App({ runtime }: AppProps) {
   }
 
   async function connectEvmWallet() {
-    return connectWithWallet("extension", () => runtime.connectWallet());
-  }
-
-  async function connectMobileEvmWallet() {
-    if (!runtime.connectWalletFallback) return undefined;
-    return connectWithWallet("mobile", () => runtime.connectWalletFallback!());
-  }
-
-  async function connectWithWallet(
-    route: "extension" | "mobile",
-    connectWallet: () => Promise<PrivateLaunchpadSession["account"]>,
-  ) {
-    if (
-      (walletConnecting && route === "extension") ||
-      walletConnectionRoute === "mobile"
-    )
-      return undefined;
+    if (walletConnecting) return undefined;
     const attempt = ++walletConnectionAttempt.current;
     setWalletConnecting(true);
-    setWalletConnectionRoute(route);
     setWalletError(undefined);
     try {
-      await connectWallet();
+      await runtime.connectWallet();
       if (attempt !== walletConnectionAttempt.current) return undefined;
       setWalletSigning(true);
       const prepared = await runtime.prepareIdentity(0);
@@ -2044,35 +2132,88 @@ export function App({ runtime }: AppProps) {
       if (runtime.recoverPositions && restored.length === 0) {
         void recoverOnchainPositions(prepared.connectedAddress, restored);
       }
-      const [recoveredBalance, pendingDeposit] = await Promise.all([
-        runtime.readPrivateBalance(),
-        runtime.readPendingDeposit(),
-      ]);
-      setPrivateBalance(recoveredBalance);
-      setPendingDepositBalance(actionablePendingDeposit(pendingDeposit));
-      const savedRest = loadPrivateBalanceRest(
-        runtime.network.chainId,
-        prepared.storageScope,
-      );
-      if (
-        savedRest &&
-        savedRest.readyAt > Date.now() &&
-        BigInt(savedRest.amount) <= recoveredBalance
-      ) {
-        setRestingPrivateBalance(BigInt(savedRest.amount));
-        setPrivateBalanceReadyAt(savedRest.readyAt);
-      } else {
-        clearPrivateBalanceRest(runtime.network.chainId, prepared.storageScope);
-        setRestingPrivateBalance(0n);
-        setPrivateBalanceReadyAt(undefined);
-      }
       setIdentity(prepared);
-      const automaticReturns = restored.filter(needsAutomaticPrivateReturn);
-      if (automaticReturns.length > 0) {
-        void automaticallyReturnPositionsToPool(
-          prepared.connectedAddress,
-          automaticReturns,
+      try {
+        const [recoveredBalance, pendingDeposit] = await Promise.all([
+          retryPrivateBalanceRead(() => runtime.readPrivateBalance()),
+          retryPrivateBalanceRead(() => runtime.readPendingDeposit()),
+        ]);
+        setPrivateBalance(recoveredBalance);
+        setPendingDepositBalance(actionablePendingDeposit(pendingDeposit));
+        const savedRest = loadPrivateBalanceRest(
+          runtime.network.chainId,
+          prepared.storageScope,
         );
+        if (
+          savedRest &&
+          savedRest.readyAt > Date.now() &&
+          BigInt(savedRest.amount) <= recoveredBalance
+        ) {
+          setRestingPrivateBalance(BigInt(savedRest.amount));
+          setPrivateBalanceReadyAt(savedRest.readyAt);
+        } else {
+          clearPrivateBalanceRest(
+            runtime.network.chainId,
+            prepared.storageScope,
+          );
+          setRestingPrivateBalance(0n);
+          setPrivateBalanceReadyAt(undefined);
+        }
+      } catch {
+        setWalletError(
+          "MetaMask is connected. Starknet temporarily failed to refresh the private balance; no transaction was submitted.",
+        );
+      }
+      const interruptedSellReturns = restored.filter(needsAutomaticSellReturn);
+      const automaticReturns = restored.filter(needsAutomaticPrivateReturn);
+      if (interruptedSellReturns.length > 0 || automaticReturns.length > 0) {
+        void (async () => {
+          for (const position of interruptedSellReturns) {
+            const sellTxHash = position.sellTxHash;
+            if (!sellTxHash) continue;
+            const remainingTokenBalance = position.tokenAmount
+              ? BigInt(position.tokenAmount)
+              : 0n;
+            beginSellExecutionLog(remainingTokenBalance, position.symbol);
+            updateExecutionLog("identity", {
+              status: "running",
+              detail:
+                "Restoring the position account to resume its interrupted private proceeds return.",
+            });
+            updateExecutionLog("bridge", {
+              status: "done",
+              detail: "The Pons sell was already submitted.",
+            });
+            updateExecutionLog("funding-relay", {
+              status: "done",
+              detail: "Checking the deterministic isolated return account.",
+            });
+            updateExecutionLog("execution", {
+              status: "done",
+              detail: "The sell transaction was broadcast previously.",
+              transactionHash: sellTxHash,
+              explorerUrl: `${ROBINHOOD_EXPLORER_URL}/tx/${sellTxHash}`,
+            });
+            updateExecutionLog("confirmation", {
+              status: "done",
+              detail: "The previous sell was confirmed on Robinhood.",
+              transactionHash: sellTxHash,
+              explorerUrl: `${ROBINHOOD_EXPLORER_URL}/tx/${sellTxHash}`,
+            });
+            await prepareFreshIdentity(position.accountIndex);
+            await returnPositionToPool(
+              position,
+              remainingTokenBalance,
+              prepared.connectedAddress,
+            );
+          }
+          if (automaticReturns.length > 0) {
+            await automaticallyReturnPositionsToPool(
+              prepared.connectedAddress,
+              automaticReturns,
+            );
+          }
+        })();
       }
       return prepared.connectedAddress;
     } catch (reason) {
@@ -2084,7 +2225,6 @@ export function App({ runtime }: AppProps) {
       if (attempt === walletConnectionAttempt.current) {
         setWalletSigning(false);
         setWalletConnecting(false);
-        setWalletConnectionRoute(undefined);
       }
     }
   }
@@ -2653,6 +2793,7 @@ export function App({ runtime }: AppProps) {
     let positionAccountIndex: number | undefined;
     let fundingDelivered = false;
     let buyConfirmedReverted = false;
+    let sellBroadcast = false;
     let sellConfirmed = false;
     setError(undefined);
     setReturnResult(undefined);
@@ -2662,6 +2803,11 @@ export function App({ runtime }: AppProps) {
         "Private buy",
         tradeDraft.amountIn,
         selectedMarket.symbol,
+      );
+    } else {
+      beginSellExecutionLog(
+        tradeDraft.amountIn,
+        activePosition?.symbol ?? selectedMarket.symbol,
       );
     }
     try {
@@ -2838,6 +2984,14 @@ export function App({ runtime }: AppProps) {
         const prepared = await prepareFreshIdentity(
           activePosition.accountIndex,
         );
+        updateExecutionLog("identity", {
+          status: "done",
+          detail: `Position account ${shorten(prepared.session.account, 10, 8)} restored.`,
+        });
+        updateExecutionLog("bridge", {
+          status: "running",
+          detail: "Reading the current token balance from Robinhood.",
+        });
         const fullBalance = await readAccountTokenBalanceWithRetry(
           runtime,
           prepared.session.account,
@@ -2853,39 +3007,88 @@ export function App({ runtime }: AppProps) {
         if (amountToSell <= 0n) {
           throw new Error("The selected sell amount is too small");
         }
+        updateExecutionLog("bridge", {
+          status: "done",
+          detail: `${formatTokenAmount(fullBalance)} $${activePosition.symbol} verified; ${formatTokenAmount(amountToSell)} selected to sell.`,
+        });
+        updateExecutionLog("funding-relay", {
+          status: "running",
+          detail:
+            "Requesting a live Pons curve quote and building the authorized sell calls.",
+        });
         patchPosition(rootAddress, positionId, {
           status: "selling",
           tokenAmount: fullBalance.toString(),
         });
+        setPortfolioSnapshots((current) => ({
+          ...current,
+          [positionId!]: { status: "loading", checkedAt: Date.now() },
+        }));
         setStage("executing");
         const sold = await runtime.sell({
           token: activePosition.token,
           amountIn: amountToSell,
           slippageBps: tradeDraft.slippageBps,
         });
+        sellBroadcast = true;
         setLastTrade(sold);
         setTransactionHash(sold.transactionHash);
+        updateExecutionLog("funding-relay", {
+          status: "done",
+          detail: `Sell quote accepted: ${formatTokenAmount(sold.amountIn)} $${activePosition.symbol} for approximately ${formatUsdc(sold.amountOut)} USDG.`,
+        });
+        updateExecutionLog("execution", {
+          status: "done",
+          detail: "The policy relayer accepted and broadcast the sell.",
+          transactionHash: sold.transactionHash,
+          explorerUrl: `${ROBINHOOD_EXPLORER_URL}/tx/${sold.transactionHash}`,
+        });
         patchPosition(rootAddress, positionId, {
           status: "selling",
           sellTxHash: sold.transactionHash,
+        });
+        updateExecutionLog("confirmation", {
+          status: "running",
+          detail: "Broadcast complete · waiting for a Robinhood block receipt.",
+          transactionHash: sold.transactionHash,
+          explorerUrl: `${ROBINHOOD_EXPLORER_URL}/tx/${sold.transactionHash}`,
         });
         const confirmation = await retryRobinhoodRpcRead(() =>
           runtime.waitForTransaction(sold.transactionHash),
         );
         if (confirmation.status === "reverted") {
           patchPosition(rootAddress, positionId, { status: "held" });
+          sellBroadcast = false;
+          updateExecutionLog("confirmation", {
+            status: "error",
+            detail: `The sell reverted in Robinhood block ${confirmation.blockNumber.toLocaleString()}; the token remains in the position account.`,
+          });
           throw new Error(
             "The sell reverted. Your token position is still held.",
           );
         }
         sellConfirmed = true;
+        updateExecutionLog("confirmation", {
+          status: "done",
+          detail: `Sell confirmed successfully in Robinhood block ${confirmation.blockNumber.toLocaleString()}.`,
+        });
         const remainingBalance = fullBalance - amountToSell;
         patchPosition(rootAddress, positionId, {
           status: "returning",
           tokenAmount: remainingBalance.toString(),
         });
         setStage("returning");
-        const returned = await runtime.returnToPool();
+        updateExecutionLog("reconcile", {
+          status: "running",
+          detail:
+            "The sell is complete. Returning its USDG proceeds to Private Balance.",
+        });
+        const returned = await runtime.returnToPool((step, status, detail) => {
+          updateExecutionLog("reconcile", {
+            status: status === "error" ? "error" : "running",
+            detail: detail ? `${step}: ${detail}` : `${step} is in progress.`,
+          });
+        });
         setReturnResult(returned);
         setPrivateBalance((balance) => balance + returned.amountReturned);
         patchPosition(rootAddress, positionId, {
@@ -2901,6 +3104,13 @@ export function App({ runtime }: AppProps) {
             checkedAt: Date.now(),
           },
         }));
+        updateExecutionLog("reconcile", {
+          status: "done",
+          detail: `${formatUsdcPrecise(returned.amountReturned)} USDC returned to Private Balance${remainingBalance > 0n ? `; ${formatTokenAmount(remainingBalance)} $${activePosition.symbol} remains in the position.` : "."}`,
+          ...(returned.claimTxHash
+            ? { transactionHash: returned.claimTxHash }
+            : {}),
+        });
         setStage("complete");
       }
     } catch (reason) {
@@ -2908,7 +3118,7 @@ export function App({ runtime }: AppProps) {
       if (/relayer has insufficient Robinhood ETH/i.test(message)) {
         setPrivateExecutionState("unavailable");
       }
-      if (tradeSide === "buy") failExecutionLog(message);
+      failExecutionLog(message);
       let failedPosition: PrivatePosition | undefined;
       if (rootAddress && positionId) {
         failedPosition = patchPosition(rootAddress, positionId, {
@@ -2919,7 +3129,9 @@ export function App({ runtime }: AppProps) {
                 : "failed"
               : sellConfirmed
                 ? "return-failed"
-                : "held",
+                : sellBroadcast
+                  ? "selling"
+                  : "held",
           lastError: message,
         });
       }
@@ -3030,23 +3242,32 @@ export function App({ runtime }: AppProps) {
     remainingTokenBalance = position.tokenAmount
       ? BigInt(position.tokenAmount)
       : 0n,
+    rootAddress = connectedWallet,
   ) {
-    if (!connectedWallet) return;
+    if (!rootAddress) return;
     setError(undefined);
     try {
       await stopPositionRecovery();
       setActivePositionId(position.id);
       await prepareFreshIdentity(position.accountIndex);
-      patchPosition(connectedWallet, position.id, {
+      patchPosition(rootAddress, position.id, {
         status: "returning",
       });
       setStage("returning");
-      const returned = await runtime.returnMultipleToPool([
-        position.accountIndex,
-      ]);
+      updateExecutionLog("reconcile", {
+        status: "running",
+        detail:
+          "Resuming the isolated cross-chain return into Private Balance.",
+      });
+      const returned = await runtime.returnToPool((step, status, detail) => {
+        updateExecutionLog("reconcile", {
+          status: status === "error" ? "error" : "running",
+          detail: detail ? `${step}: ${detail}` : `${step} is in progress.`,
+        });
+      });
       setReturnResult(returned);
       setPrivateBalance((balance) => balance + returned.amountReturned);
-      patchPosition(connectedWallet, position.id, {
+      patchPosition(rootAddress, position.id, {
         status: remainingTokenBalance > 0n ? "held" : "closed",
         tokenAmount: remainingTokenBalance.toString(),
         lastError: undefined,
@@ -3059,14 +3280,23 @@ export function App({ runtime }: AppProps) {
           checkedAt: Date.now(),
         },
       }));
-      setStage("complete");
-    } catch (reason) {
-      patchPosition(connectedWallet, position.id, {
-        status: "return-failed",
-        lastError: errorMessage(reason),
+      updateExecutionLog("reconcile", {
+        status: "done",
+        detail: `${formatUsdcPrecise(returned.amountReturned)} USDC returned to Private Balance.`,
+        ...(returned.claimTxHash
+          ? { transactionHash: returned.claimTxHash }
+          : {}),
       });
       setStage("complete");
-      setError(errorMessage(reason));
+    } catch (reason) {
+      const message = errorMessage(reason);
+      patchPosition(rootAddress, position.id, {
+        status: "return-failed",
+        lastError: message,
+      });
+      failExecutionLog(message);
+      setStage("complete");
+      setError(message);
     }
   }
 
@@ -3423,58 +3653,34 @@ export function App({ runtime }: AppProps) {
                 )}
               </button>
               {runtime.mode === "live" ? (
-                <>
-                  <button
-                    className="wallet-connect"
-                    type="button"
-                    data-connected={!!connectedWallet}
-                    disabled={walletConnecting || busy}
-                    aria-label={
-                      connectedWallet
-                        ? `MetaMask connected: ${connectedWallet}`
-                        : "Connect MetaMask extension"
-                    }
-                    onClick={connectEvmWallet}
-                  >
-                    <WalletIcon
-                      className="wallet-connect-icon"
-                      size={14}
-                      weight="duotone"
-                      aria-hidden="true"
-                    />
-                    <span>
-                      {walletConnecting && walletConnectionRoute === "extension"
-                        ? walletSigning
-                          ? "Check MetaMask…"
-                          : "Connecting…"
-                        : connectedWallet
-                          ? shorten(connectedWallet)
-                          : "Connect"}
-                    </span>
-                  </button>
-                  {!connectedWallet && runtime.connectWalletFallback && (
-                    <button
-                      className="wallet-connect wallet-connect-mobile"
-                      type="button"
-                      data-connected="false"
-                      disabled={busy || walletConnectionRoute === "mobile"}
-                      aria-label="Connect with MetaMask mobile"
-                      onClick={connectMobileEvmWallet}
-                    >
-                      <DeviceMobileIcon
-                        className="wallet-connect-icon"
-                        size={14}
-                        weight="duotone"
-                        aria-hidden="true"
-                      />
-                      <span>
-                        {walletConnectionRoute === "mobile"
-                          ? "Pairing…"
-                          : "Mobile"}
-                      </span>
-                    </button>
-                  )}
-                </>
+                <button
+                  className="wallet-connect"
+                  type="button"
+                  data-connected={!!connectedWallet}
+                  disabled={walletConnecting || busy}
+                  aria-label={
+                    connectedWallet
+                      ? `MetaMask connected: ${connectedWallet}`
+                      : "Connect MetaMask extension"
+                  }
+                  onClick={connectEvmWallet}
+                >
+                  <WalletIcon
+                    className="wallet-connect-icon"
+                    size={14}
+                    weight="duotone"
+                    aria-hidden="true"
+                  />
+                  <span>
+                    {walletConnecting
+                      ? walletSigning
+                        ? "Check MetaMask…"
+                        : "Connecting…"
+                      : connectedWallet
+                        ? shorten(connectedWallet)
+                        : "Connect"}
+                  </span>
+                </button>
               ) : (
                 <span className="wallet-preview">
                   <WalletIcon size={14} weight="duotone" aria-hidden="true" />
@@ -3532,16 +3738,6 @@ export function App({ runtime }: AppProps) {
       {walletError && (
         <div className="wallet-error-strip" role="alert">
           <span>{walletError}</span>
-          {runtime.connectWalletFallback && (
-            <button
-              className="wallet-error-fallback"
-              type="button"
-              disabled={walletConnecting || busy}
-              onClick={connectMobileEvmWallet}
-            >
-              Use MetaMask mobile
-            </button>
-          )}
           <button
             className="wallet-error-dismiss"
             type="button"

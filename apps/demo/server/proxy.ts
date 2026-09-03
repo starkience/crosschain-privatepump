@@ -182,12 +182,15 @@ export default async function handler(
       headers.set(service.header, credential);
     }
 
+    const retryableRpcRead =
+      (service.kind === "evm-rpc" && isReadOnlyEvmRequest(body)) ||
+      (service.kind === "starknet-rpc" && isReadOnlyStarknetRequest(body));
     const { result, retries } = await fetchUpstream(
       upstream,
       method,
       headers,
       body,
-      service.kind === "evm-rpc" && isReadOnlyEvmRequest(body),
+      retryableRpcRead,
     );
     if (retries > 0) {
       response.setHeader("x-privatepons-upstream-retries", retries);
@@ -412,11 +415,17 @@ async function fetchUpstream(
       redirect: "manual",
       signal: AbortSignal.timeout(55_000),
     });
-    if (
-      !retryable ||
-      !RETRYABLE_UPSTREAM_STATUSES.has(result.status) ||
-      attempt + 1 >= UPSTREAM_READ_ATTEMPTS
-    ) {
+    const invalidJson = retryable && result.ok && !(await hasJsonBody(result));
+    const retryableStatus = RETRYABLE_UPSTREAM_STATUSES.has(result.status);
+    if (!retryable || (!retryableStatus && !invalidJson)) {
+      return { result, retries: attempt };
+    }
+    if (attempt + 1 >= UPSTREAM_READ_ATTEMPTS) {
+      if (invalidJson) {
+        throw new Error(
+          "upstream RPC returned an empty or invalid JSON response",
+        );
+      }
       return { result, retries: attempt };
     }
 
@@ -432,6 +441,17 @@ async function fetchUpstream(
   throw new Error("upstream retry loop ended unexpectedly");
 }
 
+async function hasJsonBody(response: Response): Promise<boolean> {
+  try {
+    const text = await response.clone().text();
+    if (!text.trim()) return false;
+    JSON.parse(text);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 function isReadOnlyEvmRequest(body: Buffer | undefined): boolean {
   const payload = parseJson(body);
   const requests = Array.isArray(payload) ? payload : [payload];
@@ -442,6 +462,18 @@ function isReadOnlyEvmRequest(body: Buffer | undefined): boolean {
       !Array.isArray(entry) &&
       (entry as Record<string, unknown>).method !== "eth_sendRawTransaction",
   );
+}
+
+function isReadOnlyStarknetRequest(body: Buffer | undefined): boolean {
+  const payload = parseJson(body);
+  const requests = Array.isArray(payload) ? payload : [payload];
+  return requests.every((entry) => {
+    if (!entry || typeof entry !== "object" || Array.isArray(entry)) {
+      return false;
+    }
+    const method = (entry as Record<string, unknown>).method;
+    return typeof method === "string" && !method.startsWith("starknet_add");
+  });
 }
 
 function upstreamUrl(value: string, incoming: URL): URL {

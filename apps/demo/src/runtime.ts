@@ -94,8 +94,6 @@ export interface LaunchpadRuntime {
   readonly mode: "demo" | "live";
   readonly network: { name: string; chainId: number };
   connectWallet(): Promise<PrivateLaunchpadSession["account"]>;
-  /** Optional connector that bypasses an unresponsive injected extension. */
-  connectWalletFallback?(): Promise<PrivateLaunchpadSession["account"]>;
   prepareIdentity(accountIndex?: number): Promise<PreparedIdentity>;
   readPrivateBalance(): Promise<bigint>;
   readPendingDeposit(): Promise<bigint>;
@@ -165,7 +163,6 @@ export interface LiveRuntimeConfig<
   client: PrivateLaunchpadClient;
   adapter: LaunchpadAdapter<TOpenIntent, TCloseIntent>;
   connectWallet(): Promise<PrivateLaunchpadSession["account"]>;
-  connectWalletFallback?(): Promise<PrivateLaunchpadSession["account"]>;
   signIdentity(args: {
     address: PrivateLaunchpadSession["account"];
     message: string;
@@ -359,21 +356,6 @@ export function createLiveRuntime<
       chainId: config.adapter.chainId,
     },
     connectWallet: connect,
-    ...(config.connectWalletFallback
-      ? {
-          async connectWalletFallback() {
-            // Invalidate any injected-provider request that never settled. The
-            // browser has no cancellation API for it, but its late result must
-            // not replace the deliberately selected fallback provider.
-            walletConnectionGeneration += 1;
-            walletConnectionRequest = undefined;
-            identitySignatureRequest = undefined;
-            identitySignatureRequestAddress = undefined;
-            const nextAddress = await config.connectWalletFallback!();
-            return adoptConnectedAddress(nextAddress);
-          },
-        }
-      : {}),
     async prepareIdentity(preferredAccountIndex) {
       const prepareGeneration = walletConnectionGeneration;
       const accountIndex =

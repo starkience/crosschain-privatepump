@@ -291,7 +291,11 @@ export class PrivateLaunchpadClient {
           : 0n;
       const maximum = balance > feeInUsdc ? balance - feeInUsdc : 0n;
       const amount = args.amount ?? maximum;
-      if (amount <= 0n || amount > maximum) {
+      // A previous Relay transfer may already have emptied the Robinhood
+      // account while leaving recoverable USDC in the deterministic Arbitrum
+      // staging account. Let the return transport inspect that account when
+      // the source balance is zero instead of stopping the resume path here.
+      if (amount < 0n || amount > maximum) {
         throw new Error(
           `invalid return amount: maximum after relayer fee is ${maximum}`,
         );

@@ -269,6 +269,43 @@ describe("production edge proxy", () => {
     expect(response.header("x-privatepons-upstream-retries")).toBe("1");
     expect(fetchImpl).toHaveBeenCalledTimes(2);
   });
+
+  it("retries an empty read-only RPC response instead of forwarding invalid JSON", async () => {
+    vi.stubEnv("ARBITRUM_RPC_URL", "https://arb1.example");
+    const fetchImpl = vi
+      .fn()
+      .mockResolvedValueOnce(new Response("", { status: 200 }))
+      .mockResolvedValueOnce(
+        Response.json({ jsonrpc: "2.0", id: 1, result: "0xa4b1" }),
+      );
+    vi.stubGlobal("fetch", fetchImpl);
+    vi.spyOn(Math, "random").mockReturnValue(0);
+    const response = fakeResponse();
+
+    await handler(
+      {
+        url: "/api/proxy?service=arbitrum",
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: {
+          jsonrpc: "2.0",
+          id: 1,
+          method: "eth_chainId",
+          params: [],
+        },
+      } as never,
+      response.value,
+    );
+
+    expect(response.status()).toBe(200);
+    expect(response.json()).toEqual({
+      jsonrpc: "2.0",
+      id: 1,
+      result: "0xa4b1",
+    });
+    expect(response.header("x-privatepons-upstream-retries")).toBe("1");
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+  });
 });
 
 function fakeResponse(): {
