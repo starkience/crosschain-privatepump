@@ -204,6 +204,26 @@ describe("Relay cross-chain bridge", () => {
     expect(request).not.toHaveProperty("topupGasAmount");
   });
 
+  it("keeps polling after an empty Relay status response", async () => {
+    const doFetch = vi
+      .fn()
+      .mockResolvedValueOnce(new Response("", { status: 200 }))
+      .mockResolvedValueOnce(json({ status: "success" }));
+    const sleep = vi.fn(async () => undefined);
+    const client = createRelayBridgeClient({
+      fetch: doFetch,
+      pollIntervalMs: 1,
+      timeoutMs: 1_000,
+      sleep,
+    });
+
+    await expect(
+      client.waitForSuccess(`0x${"ab".repeat(32)}`),
+    ).resolves.toMatchObject({ status: "success", succeeded: true });
+    expect(doFetch).toHaveBeenCalledTimes(2);
+    expect(sleep).toHaveBeenCalledOnce();
+  });
+
   it("domain-separates the private S2 return identity by position", () => {
     const root = "0x1234";
     const first = derivePrivateReturnSignature(root, 1);

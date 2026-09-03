@@ -203,7 +203,14 @@ export function createRelayBridgeClient(
       const deadline = Date.now() + timeoutMs;
       let previous = "";
       while (Date.now() <= deadline) {
-        const status = await this.getStatus(requestId);
+        let status: RelayBridgeStatus;
+        try {
+          status = await this.getStatus(requestId);
+        } catch (error) {
+          if (!isRetryableRelayStatusError(error)) throw error;
+          await sleep(pollIntervalMs);
+          continue;
+        }
         if (status.status !== previous || status.terminal) {
           onStatus?.(status);
           previous = status.status;
@@ -1430,6 +1437,13 @@ function relayHttpError(label: string, status: number, body: unknown): Error {
   const message = objectOrNull(body)?.message ?? objectOrNull(body)?.error;
   return new Error(
     `${label} failed with HTTP ${status}${typeof message === "string" ? `: ${message}` : ""}`,
+  );
+}
+
+function isRetryableRelayStatusError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error);
+  return /returned non-JSON HTTP|failed with HTTP (?:429|5\d\d)|fetch failed|network|timed? ?out|timeout/i.test(
+    message,
   );
 }
 

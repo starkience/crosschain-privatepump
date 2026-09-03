@@ -2167,53 +2167,18 @@ export function App({ runtime }: AppProps) {
       const interruptedSellReturns = restored.filter(needsAutomaticSellReturn);
       const automaticReturns = restored.filter(needsAutomaticPrivateReturn);
       if (interruptedSellReturns.length > 0 || automaticReturns.length > 0) {
-        void (async () => {
-          for (const position of interruptedSellReturns) {
-            const sellTxHash = position.sellTxHash;
-            if (!sellTxHash) continue;
-            const remainingTokenBalance = position.tokenAmount
-              ? BigInt(position.tokenAmount)
-              : 0n;
-            beginSellExecutionLog(remainingTokenBalance, position.symbol);
-            updateExecutionLog("identity", {
-              status: "running",
-              detail:
-                "Restoring the position account to resume its interrupted private proceeds return.",
-            });
-            updateExecutionLog("bridge", {
-              status: "done",
-              detail: "The Pons sell was already submitted.",
-            });
-            updateExecutionLog("funding-relay", {
-              status: "done",
-              detail: "Checking the deterministic isolated return account.",
-            });
-            updateExecutionLog("execution", {
-              status: "done",
-              detail: "The sell transaction was broadcast previously.",
-              transactionHash: sellTxHash,
-              explorerUrl: `${ROBINHOOD_EXPLORER_URL}/tx/${sellTxHash}`,
-            });
-            updateExecutionLog("confirmation", {
-              status: "done",
-              detail: "The previous sell was confirmed on Robinhood.",
-              transactionHash: sellTxHash,
-              explorerUrl: `${ROBINHOOD_EXPLORER_URL}/tx/${sellTxHash}`,
-            });
-            await prepareFreshIdentity(position.accountIndex);
-            await returnPositionToPool(
-              position,
-              remainingTokenBalance,
-              prepared.connectedAddress,
-            );
-          }
-          if (automaticReturns.length > 0) {
-            await automaticallyReturnPositionsToPool(
-              prepared.connectedAddress,
-              automaticReturns,
-            );
-          }
-        })();
+        for (const position of interruptedSellReturns) {
+          void automaticallyReturnSellPosition(
+            prepared.connectedAddress,
+            position,
+          );
+        }
+        if (automaticReturns.length > 0) {
+          void automaticallyReturnPositionsToPool(
+            prepared.connectedAddress,
+            automaticReturns,
+          );
+        }
       }
       return prepared.connectedAddress;
     } catch (reason) {
@@ -3243,8 +3208,11 @@ export function App({ runtime }: AppProps) {
       ? BigInt(position.tokenAmount)
       : 0n,
     rootAddress = connectedWallet,
+    automatic = false,
   ) {
-    if (!rootAddress) return;
+    if (!rootAddress) {
+      return { success: false, error: "Connect MetaMask to resume the return." };
+    }
     setError(undefined);
     try {
       await stopPositionRecovery();
@@ -3288,16 +3256,87 @@ export function App({ runtime }: AppProps) {
           : {}),
       });
       setStage("complete");
+      return { success: true };
     } catch (reason) {
       const message = errorMessage(reason);
       patchPosition(rootAddress, position.id, {
         status: "return-failed",
         lastError: message,
       });
-      failExecutionLog(message);
+      if (!automatic) failExecutionLog(message);
       setStage("complete");
-      setError(message);
+      if (!automatic) setError(message);
+      return { success: false, error: message };
     }
+  }
+
+  async function automaticallyReturnSellPosition(
+    rootAddress: PrivateLaunchpadSession["account"],
+    position: PrivatePosition,
+    retryAttempt = 0,
+  ): Promise<void> {
+    const key = `${rootAddress.toLowerCase()}:sell:${position.id}`;
+    if (automaticPrivateReturns.current.has(key)) return;
+    automaticPrivateReturns.current.add(key);
+    const sellTxHash = position.sellTxHash;
+    if (!sellTxHash) {
+      automaticPrivateReturns.current.delete(key);
+      return;
+    }
+    const remainingTokenBalance = position.tokenAmount
+      ? BigInt(position.tokenAmount)
+      : 0n;
+    beginSellExecutionLog(remainingTokenBalance, position.symbol);
+    updateExecutionLog("identity", {
+      status: "running",
+      detail:
+        "Restoring the position account to resume its interrupted private proceeds return.",
+    });
+    updateExecutionLog("bridge", {
+      status: "done",
+      detail: "The Pons sell was already submitted.",
+    });
+    updateExecutionLog("funding-relay", {
+      status: "done",
+      detail: "Checking the deterministic isolated return account.",
+    });
+    updateExecutionLog("execution", {
+      status: "done",
+      detail: "The sell transaction was broadcast previously.",
+      transactionHash: sellTxHash,
+      explorerUrl: `${ROBINHOOD_EXPLORER_URL}/tx/${sellTxHash}`,
+    });
+    updateExecutionLog("confirmation", {
+      status: "done",
+      detail: "The previous sell was confirmed on Robinhood.",
+      transactionHash: sellTxHash,
+      explorerUrl: `${ROBINHOOD_EXPLORER_URL}/tx/${sellTxHash}`,
+    });
+    const result = await returnPositionToPool(
+      position,
+      remainingTokenBalance,
+      rootAddress,
+      true,
+    );
+    automaticPrivateReturns.current.delete(key);
+    if (result.success) return;
+
+    const retryDelay =
+      AUTOMATIC_PRIVATE_RETURN_RETRY_DELAYS_MS[retryAttempt] ??
+      AUTOMATIC_PRIVATE_RETURN_STEADY_RETRY_MS;
+    updateExecutionLog("reconcile", {
+      status: "running",
+      detail: `The proceeds remain recoverable. Retrying automatically in ${Math.round(retryDelay / 1_000)} seconds${result.error ? `: ${result.error}` : "."}`,
+    });
+    const timer = window.setTimeout(() => {
+      automaticPrivateReturnTimers.current.delete(timer);
+      void automaticallyReturnSellPosition(
+        rootAddress,
+        position,
+        retryAttempt + 1,
+      );
+    }, retryDelay);
+    automaticPrivateReturnTimers.current.add(timer);
   }
 
   async function retryPositionBuy(position: PrivatePosition) {
