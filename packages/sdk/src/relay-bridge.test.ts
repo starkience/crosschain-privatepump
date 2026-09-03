@@ -386,6 +386,53 @@ describe("Relay cross-chain bridge", () => {
     vi.unstubAllGlobals();
   });
 
+  it("treats an empty batch-return retry as already completed", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (_url: string, init?: RequestInit) => {
+        const body = JSON.parse(String(init?.body)) as { method: string };
+        if (body.method === "eth_call") {
+          return json({ jsonrpc: "2.0", id: 1, result: "0x0" });
+        }
+        throw new Error(`unexpected RPC method ${body.method}`);
+      }),
+    );
+    const bridge = {
+      deriveStarknetAddress: vi.fn(() => "0x1234"),
+      sendPrivateToStarknet: vi.fn(),
+      deriveEvmOwner: vi.fn(() => ({
+        address: OWNER,
+        privateKey: `0x${"12".repeat(32)}`,
+      })),
+    } as unknown as PrivacyBridgeEngine;
+    const transport = createRelayBatchReturnTransport({
+      arbitrumRpcUrl: "https://arb.test",
+      relay: {
+        quoteRobinhoodUsdgToArbitrumUsdc: vi.fn(),
+        quoteArbitrumUsdcToRobinhoodUsdg: vi.fn(),
+        getStatus: vi.fn(),
+        waitForSuccess: vi.fn(),
+      },
+    });
+
+    await expect(
+      transport({
+        bridge,
+        signature: `0x${"34".repeat(65)}`,
+        connectedEvmAddress: CONNECTED,
+        sources: [],
+      }),
+    ).resolves.toEqual({
+      amountReturned: 0n,
+      claimTxHash: "",
+      ranFreshBurn: false,
+      alreadyClaimed: true,
+      sourceAccountIndexes: [],
+    });
+    expect(bridge.sendPrivateToStarknet).not.toHaveBeenCalled();
+    vi.unstubAllGlobals();
+  });
+
   it("keeps small returned positions recoverable when Relay fees are too high", async () => {
     const transport = createRelayReturnTransport({
       relay: {

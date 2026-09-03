@@ -499,6 +499,15 @@ export function createRelayBatchReturnTransport(
       rpcUrl: arbitrumRpcUrl,
     });
     let delivered = await readUsdcBalance(localProvider, staging.address);
+    if (sources.length === 0 && delivered === 0n) {
+      return {
+        amountReturned: 0n,
+        claimTxHash: "",
+        ranFreshBurn: false,
+        alreadyClaimed: true,
+        sourceAccountIndexes: [],
+      };
+    }
     let needsGasTopup =
       (await readNativeBalance(localProvider, staging.address)) === 0n;
     const sourceAccountIndexes: number[] = [];

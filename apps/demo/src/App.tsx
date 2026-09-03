@@ -36,7 +36,6 @@ import {
   type BridgeFundResult,
   type BridgeReturnResult,
   type PrivateLaunchpadSession,
-  type WalletBatchReturnResult,
 } from "@private-launchpad/sdk";
 import type {
   LaunchDraft,
@@ -93,6 +92,7 @@ const FRESH_ACCOUNT_BALANCE_READS = 20;
 const FRESH_ACCOUNT_BALANCE_POLL_MS = 1_000;
 const ROBINHOOD_RPC_READ_ATTEMPTS = 4;
 const ROBINHOOD_RPC_RETRY_BASE_MS = 500;
+const AUTOMATIC_PRIVATE_RETURN_RETRY_DELAYS_MS = [5_000, 15_000, 45_000];
 const PORTFOLIO_READ_SPACING_MS = 150;
 const OFFICIAL_PONS_ORIGIN = "https://robinhood.ponslaunchpad.com";
 const USDG_ICON_URL =
@@ -743,11 +743,14 @@ function isCertainPreBroadcastRejection(error: unknown): boolean {
   );
 }
 
-function needsAutomaticWalletReturn(position: PrivatePosition): boolean {
+function needsAutomaticPrivateReturn(position: PrivatePosition): boolean {
+  if (["return-failed", "returning"].includes(position.status)) return true;
+  if (position.status === "buying" && !position.buyTxHash) return true;
+  if (position.status === "launching" && !position.launchTxHash) return true;
   return (
-    position.status === "buy-failed" &&
+    ["buy-failed", "failed"].includes(position.status) &&
     !!position.lastError &&
-    /before broadcast|no (?:Robinhood |buy )?transaction was (?:created|broadcast)/i.test(
+    /before broadcast|no (?:Robinhood |buy )?transaction was (?:created|broadcast)|transaction reverted|buy reverted|launch reverted/i.test(
       position.lastError,
     )
   );
@@ -1032,8 +1035,6 @@ export function App({ runtime }: AppProps) {
   const [identity, setIdentity] = useState<PreparedIdentity>();
   const [funding, setFunding] = useState<BridgeFundResult>();
   const [returnResult, setReturnResult] = useState<BridgeReturnResult>();
-  const [walletReturnResult, setWalletReturnResult] =
-    useState<WalletBatchReturnResult>();
   const [transactionHash, setTransactionHash] = useState<string>();
   const [connectedWallet, setConnectedWallet] =
     useState<PrivateLaunchpadSession["account"]>();
@@ -1078,10 +1079,21 @@ export function App({ runtime }: AppProps) {
   const positionRecoveryRequest = useRef<
     Promise<PrivatePosition[]> | undefined
   >(undefined);
-  const automaticWalletReturns = useRef(new Set<string>());
+  const automaticPrivateReturns = useRef(new Set<string>());
+  const automaticPrivateReturnTimers = useRef(new Set<number>());
   const storageScopesByRoot = useRef(new Map<string, PrivateStorageScope>());
   const [activePositionId, setActivePositionId] = useState<string>();
   const [lastTrade, setLastTrade] = useState<TradeExecution>();
+
+  useEffect(
+    () => () => {
+      for (const timer of automaticPrivateReturnTimers.current) {
+        window.clearTimeout(timer);
+      }
+      automaticPrivateReturnTimers.current.clear();
+    },
+    [],
+  );
 
   useEffect(() => {
     if (!runtime.readMarketMetadata) return undefined;
@@ -1246,11 +1258,6 @@ export function App({ runtime }: AppProps) {
     [activePosition, portfolioSnapshots, token, tradeAmount, tradeSide],
   );
   const busy = !["idle", "complete"].includes(stage);
-  const unusedReturnPositions = positions.filter((position) =>
-    ["buy-failed", "failed", "return-failed", "returning"].includes(
-      position.status,
-    ),
-  );
   const privateBalanceAvailable =
     privateBalance > restingPrivateBalance
       ? privateBalance - restingPrivateBalance
@@ -2005,9 +2012,9 @@ export function App({ runtime }: AppProps) {
         setPrivateBalanceReadyAt(undefined);
       }
       setIdentity(prepared);
-      const automaticReturns = restored.filter(needsAutomaticWalletReturn);
+      const automaticReturns = restored.filter(needsAutomaticPrivateReturn);
       if (automaticReturns.length > 0) {
-        void automaticallyReturnPositionsToWallet(
+        void automaticallyReturnPositionsToPool(
           prepared.connectedAddress,
           automaticReturns,
         );
@@ -2428,6 +2435,7 @@ export function App({ runtime }: AppProps) {
     launchInFlight.current = true;
     let rootAddress: PrivateLaunchpadSession["account"] | undefined;
     let positionId: string | undefined;
+    let positionAccountIndex: number | undefined;
     let fundingDelivered = false;
     let launchedToken: PrivateLaunchpadSession["account"] | undefined;
     let launchHash: string | undefined;
@@ -2440,6 +2448,7 @@ export function App({ runtime }: AppProps) {
       const context = await positionContext();
       rootAddress = context.rootAddress;
       const accountIndex = allocateAccountIndex(context.knownPositions);
+      positionAccountIndex = accountIndex;
       const prepared = await prepareFreshIdentity(accountIndex);
       positionId = createPositionId();
       setActivePositionId(positionId);
@@ -2467,6 +2476,7 @@ export function App({ runtime }: AppProps) {
         throw new Error("The private bridge delivered no spendable USDG");
       }
       fundingDelivered = true;
+      positionAccountIndex = fundedIdentity.session.accountIndex;
       setFunding(result);
       setPrivateBalance((balance) => balance - launchDraft.bridgeAmount);
       patchPosition(rootAddress, positionId, {
@@ -2491,13 +2501,16 @@ export function App({ runtime }: AppProps) {
       );
       if (confirmation.status === "reverted") {
         const message =
-          "The Pons launch reverted. The private USDG remains in the fresh account and can be returned.";
-        patchPosition(rootAddress, positionId, {
+          "The Pons launch reverted. The unused USDG will return to the private balance automatically.";
+        const failedPosition = patchPosition(rootAddress, positionId, {
           status: "failed",
           lastError: message,
         });
-        setError(message);
-        setStage("complete");
+        if (failedPosition) {
+          await automaticallyReturnPositionsToPool(rootAddress, [
+            failedPosition,
+          ]);
+        }
         return;
       }
       launchConfirmed = true;
@@ -2520,13 +2533,16 @@ export function App({ runtime }: AppProps) {
       );
       if (buyConfirmation.status === "reverted") {
         const message =
-          "The token launched, but the creator buy reverted. Retry the buy or return the USDC from Positions.";
-        patchPosition(rootAddress, positionId, {
+          "The token launched, but the creator buy reverted. The unused USDG will return to the private balance automatically.";
+        const failedPosition = patchPosition(rootAddress, positionId, {
           status: "buy-failed",
           lastError: message,
         });
-        setError(message);
-        setStage("complete");
+        if (failedPosition) {
+          await automaticallyReturnPositionsToPool(rootAddress, [
+            failedPosition,
+          ]);
+        }
         return;
       }
       patchPosition(rootAddress, positionId, {
@@ -2537,8 +2553,9 @@ export function App({ runtime }: AppProps) {
       setStage("complete");
     } catch (reason) {
       const message = errorMessage(reason);
+      let failedPosition: PrivatePosition | undefined;
       if (rootAddress && positionId) {
-        patchPosition(rootAddress, positionId, {
+        failedPosition = patchPosition(rootAddress, positionId, {
           status: launchConfirmed
             ? "buy-failed"
             : launchHash
@@ -2549,6 +2566,18 @@ export function App({ runtime }: AppProps) {
           ...(buyHash ? { buyTxHash: buyHash } : {}),
           lastError: message,
         });
+      }
+      if (
+        fundingDelivered &&
+        rootAddress &&
+        positionAccountIndex !== undefined &&
+        failedPosition &&
+        isCertainPreBroadcastRejection(reason)
+      ) {
+        await automaticallyReturnPositionsToPool(rootAddress, [
+          { ...failedPosition, accountIndex: positionAccountIndex },
+        ]);
+        return;
       }
       if (launchHash || buyHash || fundingDelivered) {
         setStage("complete");
@@ -2828,7 +2857,7 @@ export function App({ runtime }: AppProps) {
         failedPosition &&
         (isCertainPreBroadcastRejection(reason) || buyConfirmedReverted)
       ) {
-        await automaticallyReturnPositionsToWallet(rootAddress, [
+        await automaticallyReturnPositionsToPool(rootAddress, [
           { ...failedPosition, accountIndex: positionAccountIndex },
         ]);
         return;
@@ -2838,14 +2867,15 @@ export function App({ runtime }: AppProps) {
     }
   }
 
-  async function automaticallyReturnPositionsToWallet(
+  async function automaticallyReturnPositionsToPool(
     rootAddress: PrivateLaunchpadSession["account"],
     candidates: readonly PrivatePosition[],
+    retryAttempt = 0,
   ): Promise<void> {
     const pending = candidates.filter((position) => {
       const key = `${rootAddress.toLowerCase()}:${position.id}`;
-      if (automaticWalletReturns.current.has(key)) return false;
-      automaticWalletReturns.current.add(key);
+      if (automaticPrivateReturns.current.has(key)) return false;
+      automaticPrivateReturns.current.add(key);
       return true;
     });
     if (pending.length === 0) return;
@@ -2859,18 +2889,19 @@ export function App({ runtime }: AppProps) {
       updateExecutionLog("reconcile", {
         status: "running",
         detail:
-          "The buy was not broadcast. Approve the emergency return in MetaMask to send the fresh-account USDG directly to your connected wallet. This recovery is public onchain.",
+          "The buy did not complete. Returning unused fresh-account USDG to the private balance automatically.",
       });
-      const returned = await runtime.returnMultipleToWallet(
+      const returned = await runtime.returnMultipleToPool(
         pending.map((position) => position.accountIndex),
         (_step, status, detail) => {
           updateExecutionLog("reconcile", {
             status: status === "error" ? "error" : "running",
-            detail: detail ?? "Returning unused USDG to your wallet.",
+            detail: detail ?? "Returning unused USDG to the private balance.",
           });
         },
       );
-      setWalletReturnResult(returned);
+      setReturnResult(returned);
+      setPrivateBalance((balance) => balance + returned.amountReturned);
       for (const position of pending) {
         patchPosition(rootAddress, position.id, {
           status: "closed",
@@ -2881,7 +2912,7 @@ export function App({ runtime }: AppProps) {
         status: "done",
         detail:
           returned.amountReturned > 0n
-            ? `${formatUsdcPrecise(returned.amountReturned)} USDG returned directly to ${shorten(returned.recipient)}.`
+            ? `${formatUsdcPrecise(returned.amountReturned)} USDG returned to the private balance automatically.`
             : "The fresh account is already empty; no duplicate recovery transaction was submitted.",
       });
       setError(undefined);
@@ -2889,26 +2920,45 @@ export function App({ runtime }: AppProps) {
     } catch (recoveryReason) {
       const recoveryMessage = errorMessage(recoveryReason);
       for (const position of pending) {
+        automaticPrivateReturns.current.delete(
+          `${rootAddress.toLowerCase()}:${position.id}`,
+        );
         patchPosition(rootAddress, position.id, {
           status: "return-failed",
           lastError: recoveryMessage,
         });
       }
+      const retryDelay = AUTOMATIC_PRIVATE_RETURN_RETRY_DELAYS_MS[retryAttempt];
+      if (retryDelay !== undefined) {
+        const timer = window.setTimeout(() => {
+          automaticPrivateReturnTimers.current.delete(timer);
+          void automaticallyReturnPositionsToPool(
+            rootAddress,
+            pending,
+            retryAttempt + 1,
+          );
+        }, retryDelay);
+        automaticPrivateReturnTimers.current.add(timer);
+      }
       updateExecutionLog("reconcile", {
         status: "error",
-        detail: `Automatic wallet recovery did not complete: ${recoveryMessage}`,
+        detail:
+          retryDelay === undefined
+            ? `Automatic private return did not complete: ${recoveryMessage}`
+            : `Automatic private return is retrying in ${Math.round(retryDelay / 1_000)} seconds: ${recoveryMessage}`,
       });
       setError(
-        `The buy was not broadcast, and the USDG remains in the saved fresh account. Automatic wallet recovery did not complete: ${recoveryMessage}`,
+        retryDelay === undefined
+          ? `The USDG remains safe in its saved fresh account. Automatic return will resume the next time this wallet connects: ${recoveryMessage}`
+          : undefined,
       );
       setStage("complete");
     }
   }
 
-  async function returnPosition(position: PrivatePosition) {
+  async function returnPositionToPool(position: PrivatePosition) {
     if (!connectedWallet || busy) return;
     setError(undefined);
-    setWalletReturnResult(undefined);
     try {
       await stopPositionRecovery();
       setActivePositionId(position.id);
@@ -2917,10 +2967,11 @@ export function App({ runtime }: AppProps) {
         status: "returning",
       });
       setStage("returning");
-      const returned = await runtime.returnMultipleToWallet([
+      const returned = await runtime.returnMultipleToPool([
         position.accountIndex,
       ]);
-      setWalletReturnResult(returned);
+      setReturnResult(returned);
+      setPrivateBalance((balance) => balance + returned.amountReturned);
       patchPosition(connectedWallet, position.id, {
         status: "closed",
         lastError: undefined,
@@ -2933,48 +2984,6 @@ export function App({ runtime }: AppProps) {
       });
       setStage("complete");
       setError(errorMessage(reason));
-    }
-  }
-
-  async function returnUnusedBudget() {
-    if (!activePosition) return;
-    await returnPosition(activePosition);
-  }
-
-  async function returnAllUnusedFunds() {
-    if (!connectedWallet || busy || unusedReturnPositions.length === 0) return;
-    setError(undefined);
-    setReturnResult(undefined);
-    setWalletReturnResult(undefined);
-    const candidates = [...unusedReturnPositions];
-    try {
-      await stopPositionRecovery();
-      await prepareFreshIdentity(0);
-      for (const position of candidates) {
-        patchPosition(connectedWallet, position.id, { status: "returning" });
-      }
-      setStage("returning");
-      const returned = await runtime.returnMultipleToWallet(
-        candidates.map((position) => position.accountIndex),
-      );
-      setWalletReturnResult(returned);
-      for (const position of candidates) {
-        patchPosition(connectedWallet, position.id, {
-          status: "closed",
-          lastError: undefined,
-        });
-      }
-      setStage("complete");
-    } catch (reason) {
-      const message = errorMessage(reason);
-      for (const position of candidates) {
-        patchPosition(connectedWallet, position.id, {
-          status: "return-failed",
-          lastError: message,
-        });
-      }
-      setStage("complete");
-      setError(message);
     }
   }
 
@@ -3188,7 +3197,7 @@ export function App({ runtime }: AppProps) {
           status: "returning",
           tokenAmount: "0",
         });
-        await returnPosition(position);
+        await returnPositionToPool(position);
         return;
       }
       if (position.status === "buying" && position.token) {
@@ -4077,18 +4086,6 @@ export function App({ runtime }: AppProps) {
                             Retry creator buy
                           </button>
                         )}
-                      {!returnResult &&
-                        activePosition &&
-                        ["buy-failed", "failed", "return-failed"].includes(
-                          activePosition.status,
-                        ) && (
-                          <button
-                            className="button"
-                            onClick={returnUnusedBudget}
-                          >
-                            Return USDC to STRK20
-                          </button>
-                        )}
                       <button className="button" onClick={startAnother}>
                         New position
                       </button>
@@ -4388,26 +4385,11 @@ export function App({ runtime }: AppProps) {
                         </button>
                       ) : activePosition?.status === "buy-failed" &&
                         activePosition.token ? (
-                        <>
-                          <button
-                            className="button button-brand"
-                            onClick={() => retryPositionBuy(activePosition)}
-                          >
-                            Retry buy
-                          </button>
-                          <button
-                            className="button"
-                            onClick={() => returnPosition(activePosition)}
-                          >
-                            Return USDC
-                          </button>
-                        </>
-                      ) : activePosition?.status === "return-failed" ? (
                         <button
                           className="button button-brand"
-                          onClick={() => returnPosition(activePosition)}
+                          onClick={() => retryPositionBuy(activePosition)}
                         >
-                          Retry private return
+                          Retry buy
                         </button>
                       ) : (
                         <button
@@ -4507,40 +4489,6 @@ export function App({ runtime }: AppProps) {
                   <div className="portfolio-masthead-buttons">
                     <button
                       type="button"
-                      className="portfolio-refresh portfolio-recover"
-                      disabled={
-                        !connectedWallet ||
-                        busy ||
-                        unusedReturnPositions.length === 0
-                      }
-                      onClick={() => void returnAllUnusedFunds()}
-                    >
-                      <ShieldCheckIcon size={13} aria-hidden="true" />
-                      {stage === "returning"
-                        ? "Recovering to wallet…"
-                        : `Recover to wallet (${unusedReturnPositions.length})`}
-                    </button>
-                    {runtime.recoverPositions && (
-                      <button
-                        type="button"
-                        className="portfolio-refresh portfolio-recover"
-                        disabled={
-                          !connectedWallet ||
-                          positionRecovery.status === "scanning"
-                        }
-                        onClick={() =>
-                          connectedWallet &&
-                          void recoverOnchainPositions(connectedWallet)
-                        }
-                      >
-                        <MagnifyingGlassIcon size={13} aria-hidden="true" />
-                        {positionRecovery.status === "scanning"
-                          ? "Recovering…"
-                          : "Recover onchain"}
-                      </button>
-                    )}
-                    <button
-                      type="button"
                       className="portfolio-refresh"
                       disabled={
                         portfolioRefreshing ||
@@ -4602,26 +4550,6 @@ export function App({ runtime }: AppProps) {
                     </div>
                   </dl>
 
-                  <aside className="portfolio-custody-note">
-                    <ShieldCheckIcon
-                      size={20}
-                      weight="duotone"
-                      aria-hidden="true"
-                    />
-                    <div>
-                      <b>Separated custody · wallet-authorized recovery</b>
-                      <p>
-                        Token balances sit in deterministic position accounts,
-                        not in the connected root wallet. The app locally
-                        matches your wallet-derived owners against public
-                        account events, then rebuilds this map from live token
-                        balances. Direct recovery sends unused USDG to your
-                        connected wallet and makes that link public onchain.
-                      </p>
-                    </div>
-                    <span>RECOVERY READY</span>
-                  </aside>
-
                   {positionRecovery.status !== "idle" && (
                     <p
                       className="portfolio-recovery-status"
@@ -4637,18 +4565,6 @@ export function App({ runtime }: AppProps) {
                             : "Recovery complete. No open onchain positions were found."}
                     </p>
                   )}
-                  {walletReturnResult && (
-                    <p
-                      className="portfolio-recovery-status"
-                      data-status="done"
-                      role="status"
-                    >
-                      {formatUsdc(walletReturnResult.amountReturned)} USDG
-                      recovered directly to{" "}
-                      {shorten(walletReturnResult.recipient)}.
-                    </p>
-                  )}
-
                   <div
                     className="portfolio-grid"
                     aria-live="polite"
@@ -4882,45 +4798,25 @@ export function App({ runtime }: AppProps) {
                                 </button>
                               ) : position.status === "buy-failed" &&
                                 position.token ? (
-                                <>
-                                  <button
-                                    className="button button-brand"
-                                    onClick={() => retryPositionBuy(position)}
-                                  >
-                                    Retry buy
-                                  </button>
-                                  <button
-                                    className="button"
-                                    onClick={() => returnPosition(position)}
-                                  >
-                                    Return USDG to wallet
-                                  </button>
-                                </>
-                              ) : position.status === "return-failed" ||
-                                position.status === "returning" ? (
                                 <button
                                   className="button button-brand"
-                                  onClick={() => returnPosition(position)}
+                                  onClick={() => retryPositionBuy(position)}
                                 >
-                                  Retry wallet recovery
+                                  Retry buy
                                 </button>
-                              ) : ["launching", "buying", "selling"].includes(
-                                  position.status,
-                                ) ? (
+                              ) : position.status === "return-failed" ||
+                                position.status === "returning" ? null : [
+                                  "launching",
+                                  "buying",
+                                  "selling",
+                                ].includes(position.status) ? (
                                 <button
                                   className="button button-brand"
                                   onClick={() => recoverPosition(position)}
                                 >
                                   Check transaction
                                 </button>
-                              ) : position.status === "failed" ? (
-                                <button
-                                  className="button button-brand"
-                                  onClick={() => returnPosition(position)}
-                                >
-                                  Recover USDG to wallet
-                                </button>
-                              ) : (
+                              ) : position.status === "failed" ? null : (
                                 <button
                                   className="button"
                                   onClick={() => openSavedPosition(position)}
@@ -4940,8 +4836,8 @@ export function App({ runtime }: AppProps) {
                     balances are authoritative for token custody. Onchain
                     recovery finds deployed accounts with open Pons balances;
                     funded accounts that never deployed still require their
-                    local recovery metadata. Direct wallet recovery is public
-                    and does not pass through STRK20.
+                    local recovery metadata. Unused USDG is returned to the
+                    STRK20 private balance automatically.
                   </p>
                 </>
               ) : (
@@ -4977,10 +4873,7 @@ export function App({ runtime }: AppProps) {
                       onClick={
                         runtime.mode === "live" && !connectedWallet
                           ? connectEvmWallet
-                          : connectedWallet && runtime.recoverPositions
-                            ? () =>
-                                void recoverOnchainPositions(connectedWallet)
-                            : () => switchWorkspace("trade")
+                          : () => switchWorkspace("trade")
                       }
                       disabled={positionRecovery.status === "scanning"}
                     >
@@ -4988,9 +4881,7 @@ export function App({ runtime }: AppProps) {
                         ? "Recovering…"
                         : runtime.mode === "live" && !connectedWallet
                           ? "Connect MetaMask"
-                          : connectedWallet && runtime.recoverPositions
-                            ? "Recover onchain"
-                            : "Buy a Pons token"}
+                          : "Buy a Pons token"}
                     </button>
                   </div>
                 </div>

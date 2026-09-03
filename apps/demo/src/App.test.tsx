@@ -687,7 +687,7 @@ describe("Plank interface", () => {
     );
   });
 
-  it("automatically returns funded USDG after a certain pre-broadcast rejection", async () => {
+  it("automatically returns funded USDG to the private balance after a certain pre-broadcast rejection", async () => {
     const runtime = fixture("demo", "explore");
     vi.mocked(runtime.buy).mockRejectedValue(
       new RelayerRejectedError(
@@ -701,18 +701,21 @@ describe("Plank interface", () => {
     fireEvent.click(screen.getByRole("button", { name: /buy privately/i }));
 
     await waitFor(() =>
-      expect(runtime.returnMultipleToWallet).toHaveBeenCalledWith(
+      expect(runtime.returnMultipleToPool).toHaveBeenCalledWith(
         [7],
         expect.any(Function),
       ),
     );
     expect(
-      await screen.findByText(/24\.2 USDG returned directly/i),
+      await screen.findByText(
+        /24\.2 USDG returned to the private balance automatically/i,
+      ),
     ).toBeTruthy();
+    expect(runtime.returnMultipleToWallet).not.toHaveBeenCalled();
     expect(runtime.waitForTransaction).not.toHaveBeenCalled();
   });
 
-  it("resumes a saved pre-broadcast wallet return after reconnect", async () => {
+  it("resumes a saved pre-broadcast private return after reconnect", async () => {
     const scope = `0x${"aa".repeat(32)}`;
     const key = `privatepons-private-positions-v2:8453:${scope}`;
     localStorage.setItem(
@@ -743,11 +746,52 @@ describe("Plank interface", () => {
     fireEvent.click(screen.getByRole("button", { name: /connect metamask/i }));
 
     await waitFor(() =>
-      expect(runtime.returnMultipleToWallet).toHaveBeenCalledWith(
+      expect(runtime.returnMultipleToPool).toHaveBeenCalledWith(
         [7],
         expect.any(Function),
       ),
     );
+    expect(runtime.returnMultipleToWallet).not.toHaveBeenCalled();
+    await waitFor(() => {
+      expect(localStorage.getItem(key)).toContain('"status":"closed"');
+    });
+  });
+
+  it("automatically returns an interrupted funded buy with no transaction hash", async () => {
+    const scope = `0x${"aa".repeat(32)}`;
+    const key = `privatepons-private-positions-v2:8453:${scope}`;
+    localStorage.setItem(
+      key,
+      JSON.stringify({
+        version: 1,
+        positions: [
+          {
+            id: "interrupted-buy",
+            kind: "trade",
+            name: "Interrupted buy",
+            symbol: "INT",
+            token: LIVE_PONS_TOKEN,
+            accountIndex: 9,
+            account: session.account,
+            status: "buying",
+            usdcCommitted: "2233200",
+            createdAt: 1,
+            updatedAt: 2,
+          },
+        ],
+      }),
+    );
+    const runtime = fixture("live", "explore");
+
+    fireEvent.click(screen.getByRole("button", { name: /connect metamask/i }));
+
+    await waitFor(() =>
+      expect(runtime.returnMultipleToPool).toHaveBeenCalledWith(
+        [9],
+        expect.any(Function),
+      ),
+    );
+    expect(runtime.returnMultipleToWallet).not.toHaveBeenCalled();
     await waitFor(() => {
       expect(localStorage.getItem(key)).toContain('"status":"closed"');
     });
@@ -1236,7 +1280,7 @@ describe("Plank interface", () => {
     expect(recoverPositions).not.toHaveBeenCalled();
   });
 
-  it("returns all failed-account USDG directly to the connected wallet", async () => {
+  it("returns failed-account USDG automatically without recovery controls", async () => {
     const scope = `0x${"aa".repeat(32)}`;
     const key = `privatepons-private-positions-v2:8453:${scope}`;
     localStorage.setItem(
@@ -1265,6 +1309,8 @@ describe("Plank interface", () => {
             account: "0x1111111111111111111111111111111111111113",
             status: "buy-failed",
             usdcCommitted: "1000000",
+            lastError:
+              "The policy relayer rejected this private execution before broadcast. No Robinhood transaction was created and the USDG remains in the fresh account.",
             createdAt: 1,
             updatedAt: 2,
           },
@@ -1273,16 +1319,17 @@ describe("Plank interface", () => {
     );
     const runtime = fixture("live");
     fireEvent.click(screen.getByRole("button", { name: /connect metamask/i }));
-    await screen.findByRole("button", { name: /metamask connected/i });
-    fireEvent.click(screen.getByRole("button", { name: /^back$/i }));
-    fireEvent.click(screen.getByRole("button", { name: /positions/i }));
-    fireEvent.click(
-      await screen.findByRole("button", { name: /recover to wallet \(2\)/i }),
-    );
 
     await waitFor(() =>
-      expect(runtime.returnMultipleToWallet).toHaveBeenCalledWith([11, 12]),
+      expect(runtime.returnMultipleToPool).toHaveBeenCalledWith(
+        [11, 12],
+        expect.any(Function),
+      ),
     );
+    expect(runtime.returnMultipleToWallet).not.toHaveBeenCalled();
+    expect(
+      screen.queryByRole("button", { name: /recover to wallet/i }),
+    ).toBeNull();
     await waitFor(() => {
       const stored = localStorage.getItem(key) ?? "";
       expect(stored.match(/\"status\":\"closed\"/g)).toHaveLength(2);
