@@ -35,6 +35,17 @@ const DEFAULT_CURSOR_KEY = "private-pons.relay-funding.v1";
 const DEFAULT_PRIVATE_TRANSFER_FEE_BUFFER = 500_000n;
 const DERIVED_RPC_READ_ATTEMPTS = 4;
 const DERIVED_RPC_RETRY_BASE_MS = 250;
+const SOURCE_BROADCAST_ATTEMPTS = 5;
+const SOURCE_BROADCAST_POLL_MS = 4_000;
+
+export class RobinhoodTransactionNotFoundError extends Error {
+  constructor(readonly transactionHash: string) {
+    super(
+      `MetaMask returned transaction ${transactionHash}, but Robinhood never received it. The USDG transfer was not broadcast, so Relay and STRK20 did not start. Restart Chrome and unlock MetaMask before retrying.`,
+    );
+    this.name = "RobinhoodTransactionNotFoundError";
+  }
+}
 
 export interface RelayBridgeQuote {
   requestId: string;
@@ -109,7 +120,12 @@ export interface RelayFundingTransportOptions {
 export interface RelayDepositTransportOptions {
   relay: RelayBridgeClient;
   arbitrumRpcUrl?: string;
+  robinhoodRpcUrl?: string;
   inboundChannel?: string;
+  fetch?: typeof fetch;
+  sleep?: (milliseconds: number) => Promise<void>;
+  sourceBroadcastAttempts?: number;
+  sourceBroadcastPollMs?: number;
 }
 
 export interface RelayReturnTransportOptions extends RelayDepositTransportOptions {
@@ -234,6 +250,16 @@ export function createRelayDepositTransport(
 ): PrivateDepositTransport {
   const inboundChannel = options.inboundChannel ?? "pons-inbound-v1";
   const arbitrumRpcUrl = options.arbitrumRpcUrl ?? "/arbitrum-rpc";
+  const robinhoodRpcUrl = options.robinhoodRpcUrl ?? "/robinhood-rpc";
+  const fetchImpl = options.fetch ?? fetch;
+  const sleep =
+    options.sleep ??
+    ((milliseconds: number) =>
+      new Promise<void>((resolve) => setTimeout(resolve, milliseconds)));
+  const sourceBroadcastAttempts =
+    options.sourceBroadcastAttempts ?? SOURCE_BROADCAST_ATTEMPTS;
+  const sourceBroadcastPollMs =
+    options.sourceBroadcastPollMs ?? SOURCE_BROADCAST_POLL_MS;
   return async (args) => {
     const accounts = await args.provider.request({
       method: "eth_requestAccounts",
@@ -268,7 +294,7 @@ export function createRelayDepositTransport(
       });
     }
 
-    let delivered = await readUsdcBalance(localProvider, staging.address);
+    let delivered = 0n;
     args.onStep?.(
       "deploy",
       "running",
@@ -295,6 +321,14 @@ export function createRelayDepositTransport(
     args.onBurned?.({
       burnTxHash: sourceTxHash,
       explorerUrl: `https://robinhoodchain.blockscout.com/tx/${sourceTxHash}`,
+    });
+    await waitForRobinhoodBroadcast({
+      transactionHash: sourceTxHash,
+      rpcUrl: robinhoodRpcUrl,
+      fetch: fetchImpl,
+      sleep,
+      attempts: sourceBroadcastAttempts,
+      pollMs: sourceBroadcastPollMs,
     });
     await options.relay.waitForSuccess(quote.requestId, (status) =>
       args.onStep?.(
@@ -323,6 +357,62 @@ export function createRelayDepositTransport(
       ...(args.onStep ? { onStep: args.onStep } : {}),
     });
   };
+}
+
+async function waitForRobinhoodBroadcast(args: {
+  transactionHash: string;
+  rpcUrl: string;
+  fetch: typeof fetch;
+  sleep(milliseconds: number): Promise<void>;
+  attempts: number;
+  pollMs: number;
+}): Promise<void> {
+  if (!Number.isSafeInteger(args.attempts) || args.attempts <= 0) {
+    throw new Error("source broadcast attempts must be a positive integer");
+  }
+  if (!Number.isSafeInteger(args.pollMs) || args.pollMs < 0) {
+    throw new Error("source broadcast poll interval must be non-negative");
+  }
+  let missingChecks = 0;
+  let lastReadError: unknown;
+  for (let attempt = 0; attempt < args.attempts; attempt += 1) {
+    try {
+      const response = await args.fetch(args.rpcUrl, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          jsonrpc: "2.0",
+          id: attempt + 1,
+          method: "eth_getTransactionByHash",
+          params: [args.transactionHash],
+        }),
+      });
+      const payload = object(
+        await responseJson(response, "Robinhood transaction lookup"),
+        "Robinhood transaction lookup",
+      );
+      if (!response.ok || payload.error) {
+        const rpcError = objectOrNull(payload.error);
+        const detail =
+          typeof rpcError?.message === "string"
+            ? rpcError.message
+            : `HTTP ${response.status}`;
+        throw new Error(`Robinhood transaction lookup failed: ${detail}`);
+      }
+      if (objectOrNull(payload.result)) return;
+      missingChecks += 1;
+    } catch (error) {
+      lastReadError = error;
+    }
+    if (attempt + 1 < args.attempts) await args.sleep(args.pollMs);
+  }
+  if (missingChecks === args.attempts) {
+    throw new RobinhoodTransactionNotFoundError(args.transactionHash);
+  }
+  throw new Error(
+    "Could not verify whether Robinhood received the MetaMask transaction. Relay and STRK20 were not started; retry the status check shortly.",
+    { cause: lastReadError },
+  );
 }
 
 /**

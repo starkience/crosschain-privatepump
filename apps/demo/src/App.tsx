@@ -32,6 +32,7 @@ import { WalletIcon } from "@phosphor-icons/react/dist/csr/Wallet";
 import {
   PONS_V2_ROBINHOOD,
   RelayerRejectedError,
+  RobinhoodTransactionNotFoundError,
   type BridgeFundResult,
   type BridgeReturnResult,
   type PrivateLaunchpadSession,
@@ -57,6 +58,7 @@ import {
   type PrivatePosition,
   type PrivateStorageScope,
 } from "./positions.js";
+import { PONS_BROWSER_CONFIG } from "./browser-config.js";
 
 interface AppProps {
   runtime: LaunchpadRuntime;
@@ -440,7 +442,7 @@ interface ExecutionLogEntry extends ProcessLogEntry {
 }
 
 const TRANSACTION_HASH_PATTERN = /^0x[0-9a-fA-F]{64}$/;
-const ROBINHOOD_RPC_URL = "https://rpc.mainnet.chain.robinhood.com";
+const ROBINHOOD_RPC_URL = PONS_BROWSER_CONFIG.VITE_ROBINHOOD_RPC_URL;
 const ROBINHOOD_EXPLORER_URL = "https://robinhoodchain.blockscout.com";
 const DEPOSIT_LOG_STORAGE_KEY = "privatepons-deposit-process-v1";
 const DEPOSIT_HASH_STORAGE_KEY = "privatepons-deposit-hash-v1";
@@ -2409,6 +2411,37 @@ export function App({ runtime }: AppProps) {
       runtime.reset();
       setIdentity(undefined);
     } catch (reason) {
+      if (reason instanceof RobinhoodTransactionNotFoundError) {
+        const detail = errorMessage(reason);
+        updateDepositLog("source", {
+          status: "error",
+          detail,
+          transactionHash: reason.transactionHash,
+          explorerUrl: `${ROBINHOOD_EXPLORER_URL}/tx/${reason.transactionHash}`,
+        });
+        updateDepositLog("relay", {
+          status: "pending",
+          detail: "Not started because the Robinhood transfer was dropped.",
+        });
+        updateDepositLog("register", {
+          status: "pending",
+          detail: "Not started.",
+        });
+        updateDepositLog("deposit", {
+          status: "pending",
+          detail: "No private balance note was created.",
+        });
+        setTrackedDepositHash("");
+        setTrackHashDraft("");
+        setReceiptCheckError(undefined);
+        setBalanceStep(undefined);
+        setStage("idle");
+        setIdentity(undefined);
+        setError(detail);
+        runtime.reset();
+        localStorage.removeItem(DEPOSIT_HASH_STORAGE_KEY);
+        return;
+      }
       updateDepositLog("reconcile", {
         status: "running",
         detail: isAmbiguousPaymasterSubmissionError(reason)
@@ -3383,6 +3416,27 @@ export function App({ runtime }: AppProps) {
     );
     automaticPrivateReturns.current.delete(key);
     if (result.success) return;
+
+    if (
+      result.error &&
+      /No recoverable return was found: the Robinhood source has 0(?:\.0+)? USDG and the isolated Arbitrum staging account has 0(?:\.0+)? USDC/i.test(
+        result.error,
+      )
+    ) {
+      patchPosition(rootAddress, position.id, {
+        status: "closed",
+        tokenAmount: remainingTokenBalance.toString(),
+        lastError: undefined,
+      });
+      updateExecutionLog("reconcile", {
+        status: "done",
+        detail:
+          "The confirmed sell account and its deterministic staging account are empty. No return transaction remains; recovery tracking is complete.",
+      });
+      setError(undefined);
+      setStage("complete");
+      return;
+    }
 
     const retryDelay =
       AUTOMATIC_PRIVATE_RETURN_RETRY_DELAYS_MS[retryAttempt] ??

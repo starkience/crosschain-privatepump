@@ -10,6 +10,7 @@ import {
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   RelayerRejectedError,
+  RobinhoodTransactionNotFoundError,
   type PrivateLaunchpadSession,
 } from "@private-launchpad/sdk";
 import { App } from "./App.js";
@@ -770,6 +771,39 @@ describe("Plank interface", () => {
       screen.getByRole("link", { name: /explorer/i }).getAttribute("href"),
     ).toBe(`https://robinhoodchain.blockscout.com/tx/${submittedHash}`);
     expect(screen.getByText(/STRK20 pool deposit/i)).toBeTruthy();
+  });
+
+  it("clears a deposit immediately when the SDK rejects a dropped wallet hash", async () => {
+    const sourceTxHash = `0x${"6".repeat(64)}`;
+    const runtime = fixture("demo", "explore");
+    vi.mocked(runtime.deposit).mockImplementation(
+      async (_amount, _onStep, onSubmitted) => {
+        onSubmitted?.({
+          burnTxHash: sourceTxHash,
+          explorerUrl: `https://robinhoodchain.blockscout.com/tx/${sourceTxHash}`,
+        });
+        throw new RobinhoodTransactionNotFoundError(sourceTxHash);
+      },
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: /^deposit$/i }));
+    fireEvent.click(
+      screen.getByRole("button", { name: /continue in wallet/i }),
+    );
+
+    expect(
+      await screen.findAllByText(/Robinhood never received it/i),
+    ).not.toHaveLength(0);
+    expect(runtime.reset).toHaveBeenCalledOnce();
+    expect(localStorage.getItem("privatepons-deposit-hash-v1")).toBeNull();
+    expect(
+      (
+        screen.getByRole("textbox", {
+          name: /follow a robinhood transaction/i,
+        }) as HTMLInputElement
+      ).value,
+    ).toBe("");
+    expect(runtime.readPendingDeposit).not.toHaveBeenCalled();
   });
 
   it("logs private-buy funding, relayer rejection, and recovery state", async () => {
@@ -1556,5 +1590,52 @@ describe("Plank interface", () => {
     await waitFor(() => {
       expect(localStorage.getItem(key)).toContain('"status":"closed"');
     });
+  });
+
+  it("stops retrying a confirmed sell when both recovery accounts are empty", async () => {
+    const scope = `0x${"aa".repeat(32)}`;
+    const key = `privatepons-private-positions-v2:8453:${scope}`;
+    localStorage.setItem(
+      key,
+      JSON.stringify({
+        version: 1,
+        positions: [
+          {
+            id: "sell-return-empty",
+            kind: "trade",
+            name: "PonsDonate",
+            symbol: "PONSDONATE",
+            token: LIVE_PONS_TOKEN,
+            accountIndex: 7,
+            account: session.account,
+            status: "return-failed",
+            usdcCommitted: "2233200",
+            tokenAmount: "0",
+            sellTxHash: `0x${"66".repeat(32)}`,
+            createdAt: 1,
+            updatedAt: 2,
+          },
+        ],
+      }),
+    );
+    const returnToPool = vi.fn(async () => {
+      throw new Error(
+        "No recoverable return was found: the Robinhood source has 0 USDG and the isolated Arbitrum staging account has 0 USDC.",
+      );
+    });
+    const runtime = fixture("live", "explore", { returnToPool });
+
+    fireEvent.click(screen.getByRole("button", { name: /connect metamask/i }));
+
+    await waitFor(() => expect(returnToPool).toHaveBeenCalledOnce());
+    expect(
+      await screen.findByText(/No return transaction remains/i),
+    ).toBeTruthy();
+    await waitFor(() => {
+      expect(localStorage.getItem(key)).toContain('"status":"closed"');
+    });
+    expect(
+      localStorage.getItem("privatepons-execution-process-v1"),
+    ).not.toContain("Retrying automatically");
   });
 });

@@ -3,8 +3,10 @@ import type { Address } from "viem";
 import {
   ARBITRUM_NATIVE_USDC,
   ROBINHOOD_USDG,
+  RobinhoodTransactionNotFoundError,
   createRelayBatchReturnTransport,
   createRelayBridgeClient,
+  createRelayDepositTransport,
   createDerivedEip1193Provider,
   createRelayFundingTransport,
   createRelayReturnTransport,
@@ -159,6 +161,76 @@ describe("Relay cross-chain bridge", () => {
         amount: 999_000n,
       }),
     ).rejects.toThrow(/calldata changed/);
+  });
+
+  it("does not poll Relay when MetaMask's hash never reaches Robinhood", async () => {
+    const sourceTxHash = `0x${"66".repeat(32)}`;
+    const waitForSuccess = vi.fn();
+    const sourceFetch = vi.fn(async () =>
+      json({ jsonrpc: "2.0", id: 1, result: null }),
+    );
+    const sleep = vi.fn(async () => undefined);
+    const onBurned = vi.fn();
+    const moveIntoPool = vi.fn();
+    const transport = createRelayDepositTransport({
+      robinhoodRpcUrl: "/robinhood-rpc",
+      fetch: sourceFetch,
+      sleep,
+      sourceBroadcastAttempts: 3,
+      sourceBroadcastPollMs: 1,
+      relay: {
+        quoteRobinhoodUsdgToArbitrumUsdc: vi.fn(async () => ({
+          requestId: `0x${"cd".repeat(32)}`,
+          inputAmount: 5_000_000n,
+          outputAmount: 4_900_000n,
+          minimumOutputAmount: 4_800_000n,
+          depositAddress: DEPOSIT,
+          depositTransaction: {
+            chainId: 4663,
+            from: CONNECTED,
+            to: ROBINHOOD_USDG,
+            data: transferData(DEPOSIT, 5_000_000n),
+            value: "0x0",
+          },
+        })),
+        quoteArbitrumUsdcToRobinhoodUsdg: vi.fn(),
+        getStatus: vi.fn(),
+        waitForSuccess,
+      },
+    });
+    const provider = {
+      request: vi.fn(async ({ method }: { method: string }) => {
+        if (method === "eth_requestAccounts") return [CONNECTED];
+        if (method === "eth_sendTransaction") return sourceTxHash;
+        throw new Error(`unexpected wallet method ${method}`);
+      }),
+    };
+
+    await expect(
+      transport({
+        bridge: {
+          deriveEvmOwner: vi.fn(() => ({
+            address: OWNER,
+            privateKey: `0x${"12".repeat(32)}`,
+          })),
+          moveIntoPool,
+        } as unknown as PrivacyBridgeEngine,
+        signature: `0x${"34".repeat(65)}`,
+        amount: 5_000_000n,
+        provider,
+        resume: false,
+        onBurned,
+      }),
+    ).rejects.toEqual(new RobinhoodTransactionNotFoundError(sourceTxHash));
+
+    expect(onBurned).toHaveBeenCalledWith({
+      burnTxHash: sourceTxHash,
+      explorerUrl: `https://robinhoodchain.blockscout.com/tx/${sourceTxHash}`,
+    });
+    expect(sourceFetch).toHaveBeenCalledTimes(3);
+    expect(sleep).toHaveBeenCalledTimes(2);
+    expect(waitForSuccess).not.toHaveBeenCalled();
+    expect(moveIntoPool).not.toHaveBeenCalled();
   });
 
   it("requests the reverse Robinhood deposit route with an Arbitrum gas top-up", async () => {

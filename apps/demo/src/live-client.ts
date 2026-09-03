@@ -147,6 +147,8 @@ export async function createPonsMainnetLiveClient(
     depositTransport: createRelayDepositTransport({
       relay: relayBridge,
       arbitrumRpcUrl,
+      robinhoodRpcUrl: rpcUrl,
+      ...(fetchImplementation ? { fetch: fetchImplementation } : {}),
     }),
     fundingTransport: createRelayFundingTransport({
       relay: relayBridge,
