@@ -128,6 +128,44 @@ describe("live frontend runtime", () => {
     );
   });
 
+  it("marks a failed buy quote as certainly not broadcast", async () => {
+    const execute = vi.fn();
+    const runtime = createLiveRuntime({
+      appId: "launch.example",
+      accountIndex: 3,
+      client: {
+        deriveSession: vi.fn(async () => session),
+        execute,
+      } as unknown as PrivateLaunchpadClient,
+      adapter: { id: "host", chainId: 84532 } as LaunchpadAdapter<
+        LaunchDraft,
+        never
+      >,
+      connectWallet: async () => address,
+      signIdentity: async () => "wallet-signature",
+      buildOpenIntent: (intent) => intent,
+      trade: {
+        buildIntent: (intent) => intent,
+        quote: vi.fn(async () => {
+          throw new Error("curve quote unavailable");
+        }),
+      },
+    });
+
+    await runtime.prepareIdentity();
+    await expect(
+      runtime.buy({
+        token: "0x8888888888888888888888888888888888888888",
+        amountIn: 25_000_000n,
+        slippageBps: 100,
+      }),
+    ).rejects.toMatchObject({
+      message: "curve quote unavailable",
+      broadcasted: false,
+    });
+    expect(execute).not.toHaveBeenCalled();
+  });
+
   it("reconciles a saved position without restoring signing material", async () => {
     const positionAccount =
       "0x9999999999999999999999999999999999999999" as PrivateLaunchpadSession["account"];

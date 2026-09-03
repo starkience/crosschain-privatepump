@@ -439,17 +439,30 @@ export class PrivateLaunchpadClient {
 
     const sources = [];
     for (const accountIndex of uniqueIndexes) {
-      const session = await this.deriveSession(args.signature, accountIndex);
-      const amount = await this.config.publicClient.readContract({
-        address: this.config.usdc,
-        abi: erc20Abi,
-        functionName: "balanceOf",
-        args: [session.account],
-      });
+      const session = await retryRateLimitedRead(() =>
+        this.deriveSession(args.signature, accountIndex),
+      );
+      const amount = await retryRateLimitedRead(() =>
+        this.config.publicClient.readContract({
+          address: this.config.usdc,
+          abi: erc20Abi,
+          functionName: "balanceOf",
+          args: [session.account],
+        }),
+      );
       if (amount > 0n) sources.push({ session, amount });
     }
+    const recipient = getAddress(args.connectedEvmAddress);
     if (sources.length === 0) {
-      throw new Error("no unused USDG remains in the selected accounts");
+      // A retry can arrive after the earlier recovery was broadcast. Treat an
+      // empty source set as already recovered so the UI never asks the wallet
+      // to authorize a duplicate transfer.
+      return {
+        amountReturned: 0n,
+        recipient,
+        sourceAccountIndexes: [],
+        transactionHashes: [],
+      };
     }
     sources.sort((left, right) =>
       left.session.account
@@ -457,7 +470,6 @@ export class PrivateLaunchpadClient {
         .localeCompare(right.session.account.toLowerCase()),
     );
 
-    const recipient = getAddress(args.connectedEvmAddress);
     const authorizationDeadline = BigInt(
       Math.floor(Date.now() / 1_000) + DEFAULT_DEADLINE_SECONDS,
     );

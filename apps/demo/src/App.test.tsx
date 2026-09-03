@@ -687,6 +687,72 @@ describe("Plank interface", () => {
     );
   });
 
+  it("automatically returns funded USDG after a certain pre-broadcast rejection", async () => {
+    const runtime = fixture("demo", "explore");
+    vi.mocked(runtime.buy).mockRejectedValue(
+      new RelayerRejectedError(
+        400,
+        'The contract function "deployAndExecute" reverted.',
+        "relay-request-auto-return",
+      ),
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: /night market/i }));
+    fireEvent.click(screen.getByRole("button", { name: /buy privately/i }));
+
+    await waitFor(() =>
+      expect(runtime.returnMultipleToWallet).toHaveBeenCalledWith(
+        [7],
+        expect.any(Function),
+      ),
+    );
+    expect(
+      await screen.findByText(/24\.2 USDG returned directly/i),
+    ).toBeTruthy();
+    expect(runtime.waitForTransaction).not.toHaveBeenCalled();
+  });
+
+  it("resumes a saved pre-broadcast wallet return after reconnect", async () => {
+    const scope = `0x${"aa".repeat(32)}`;
+    const key = `privatepons-private-positions-v2:8453:${scope}`;
+    localStorage.setItem(
+      key,
+      JSON.stringify({
+        version: 1,
+        positions: [
+          {
+            id: "failed-buy",
+            kind: "trade",
+            name: "Failed buy",
+            symbol: "FAIL",
+            token: LIVE_PONS_TOKEN,
+            accountIndex: 7,
+            account: session.account,
+            status: "buy-failed",
+            usdcCommitted: "2233200",
+            lastError:
+              "The policy relayer rejected this private execution before broadcast. No Robinhood transaction was created and the USDG remains in the fresh account.",
+            createdAt: 1,
+            updatedAt: 2,
+          },
+        ],
+      }),
+    );
+    const runtime = fixture("live", "explore");
+
+    fireEvent.click(screen.getByRole("button", { name: /connect metamask/i }));
+
+    await waitFor(() =>
+      expect(runtime.returnMultipleToWallet).toHaveBeenCalledWith(
+        [7],
+        expect.any(Function),
+      ),
+    );
+    await waitFor(() => {
+      expect(localStorage.getItem(key)).toContain('"status":"closed"');
+    });
+  });
+
   it("shows the useful reason from a multiline relayer rejection", async () => {
     const runtime = fixture("demo", "explore");
     vi.mocked(runtime.buy).mockRejectedValue(
@@ -799,7 +865,7 @@ describe("Plank interface", () => {
     expect(screen.queryByText(/too many requests/i)).toBeNull();
   });
 
-  it("rechecks the live USDG balance before retrying a rejected buy", async () => {
+  it("rechecks the live USDG balance before retrying an ambiguous buy", async () => {
     let fundingBalanceRead = true;
     const readAccountTokenBalance = vi.fn(
       async (_account: string, token: string) => {
@@ -826,9 +892,7 @@ describe("Plank interface", () => {
       })),
     });
     vi.mocked(runtime.buy)
-      .mockRejectedValueOnce(
-        new RelayerRejectedError(400, "execution simulation failed", "first"),
-      )
+      .mockRejectedValueOnce(new Error("relayer response timed out"))
       .mockResolvedValueOnce({
         transactionHash: `0x${"9".repeat(64)}`,
         amountIn: 12_000_000n,
@@ -840,7 +904,7 @@ describe("Plank interface", () => {
     await screen.findByRole("button", { name: /metamask connected/i });
     fireEvent.click(screen.getByRole("button", { name: /PonsDonate/i }));
     fireEvent.click(screen.getByRole("button", { name: /buy privately/i }));
-    await screen.findAllByText(/execution simulation failed/i);
+    await screen.findAllByText(/relayer response timed out/i);
 
     fireEvent.click(
       within(

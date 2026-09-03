@@ -61,6 +61,16 @@ export interface TradeExecution {
   minimumAmountOut: bigint;
 }
 
+/** A trade failed before the policy relayer could receive a transaction. */
+export class ExecutionNotBroadcastError extends Error {
+  readonly broadcasted = false;
+
+  constructor(cause: unknown) {
+    super(cause instanceof Error ? cause.message : String(cause), { cause });
+    this.name = "ExecutionNotBroadcastError";
+  }
+}
+
 export interface DepositTransactionInfo {
   burnTxHash: string;
   explorerUrl?: string;
@@ -510,8 +520,14 @@ export function createLiveRuntime<
     async buy(draft) {
       const identity = requireIdentity();
       if (!config.trade) throw new Error("launchpad trading is not configured");
-      const intent = await config.trade.buildIntent(draft, identity.session);
-      const quote = await config.trade.quote("buy", intent, identity.session);
+      let intent: TTradeIntent;
+      let quote: RuntimeTradeQuote;
+      try {
+        intent = await config.trade.buildIntent(draft, identity.session);
+        quote = await config.trade.quote("buy", intent, identity.session);
+      } catch (error) {
+        throw new ExecutionNotBroadcastError(error);
+      }
       const transactionHash = await config.client.execute(
         identity.identitySignature,
         identity.session,

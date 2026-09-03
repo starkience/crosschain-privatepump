@@ -244,6 +244,27 @@ describe("private launchpad client", () => {
     });
   });
 
+  it("treats an empty direct-recovery retry as already completed", async () => {
+    const { client, relayRequests } = fixture(0n);
+    const authorize = vi.fn(async () => `0x${"88".repeat(65)}`);
+
+    await expect(
+      client.returnSessionsToWallet({
+        signature: "0x1234",
+        accountIndexes: [7],
+        connectedEvmAddress: CONNECTED,
+        authorize,
+      }),
+    ).resolves.toEqual({
+      amountReturned: 0n,
+      recipient: CONNECTED,
+      sourceAccountIndexes: [],
+      transactionHashes: [],
+    });
+    expect(authorize).not.toHaveBeenCalled();
+    expect(relayRequests).toHaveLength(0);
+  });
+
   it("bridges directly to the deterministic smart account", async () => {
     const { client, fundAccountFromPool } = fixture();
     const result = await client.fundSession({

@@ -734,6 +734,25 @@ function isRobinhoodRpcRateLimited(error: unknown): boolean {
   return /too many requests|\b429\b|rate[ -]?limit/i.test(message);
 }
 
+function isCertainPreBroadcastRejection(error: unknown): boolean {
+  return (
+    !!error &&
+    typeof error === "object" &&
+    "broadcasted" in error &&
+    error.broadcasted === false
+  );
+}
+
+function needsAutomaticWalletReturn(position: PrivatePosition): boolean {
+  return (
+    position.status === "buy-failed" &&
+    !!position.lastError &&
+    /before broadcast|no (?:Robinhood |buy )?transaction was (?:created|broadcast)/i.test(
+      position.lastError,
+    )
+  );
+}
+
 async function retryRobinhoodRpcRead<T>(read: () => Promise<T>): Promise<T> {
   let lastError: unknown;
   for (let attempt = 0; attempt < ROBINHOOD_RPC_READ_ATTEMPTS; attempt += 1) {
@@ -1059,6 +1078,7 @@ export function App({ runtime }: AppProps) {
   const positionRecoveryRequest = useRef<
     Promise<PrivatePosition[]> | undefined
   >(undefined);
+  const automaticWalletReturns = useRef(new Set<string>());
   const storageScopesByRoot = useRef(new Map<string, PrivateStorageScope>());
   const [activePositionId, setActivePositionId] = useState<string>();
   const [lastTrade, setLastTrade] = useState<TradeExecution>();
@@ -1985,6 +2005,13 @@ export function App({ runtime }: AppProps) {
         setPrivateBalanceReadyAt(undefined);
       }
       setIdentity(prepared);
+      const automaticReturns = restored.filter(needsAutomaticWalletReturn);
+      if (automaticReturns.length > 0) {
+        void automaticallyReturnPositionsToWallet(
+          prepared.connectedAddress,
+          automaticReturns,
+        );
+      }
       return prepared.connectedAddress;
     } catch (reason) {
       if (attempt === walletConnectionAttempt.current) {
@@ -2539,7 +2566,9 @@ export function App({ runtime }: AppProps) {
     if (!tradeValid || busy) return;
     let rootAddress: PrivateLaunchpadSession["account"] | undefined;
     let positionId: string | undefined;
+    let positionAccountIndex: number | undefined;
     let fundingDelivered = false;
+    let buyConfirmedReverted = false;
     let sellConfirmed = false;
     setError(undefined);
     setReturnResult(undefined);
@@ -2614,6 +2643,7 @@ export function App({ runtime }: AppProps) {
           },
         );
         const fundedIdentity = reconcileFundedIdentity(prepared, fundingResult);
+        positionAccountIndex = fundedIdentity.session.accountIndex;
         const quotedAmount =
           fundingResult.amountDelivered ??
           fundingResult.minimumAmountDelivered ??
@@ -2687,6 +2717,7 @@ export function App({ runtime }: AppProps) {
           runtime.waitForTransaction(bought.transactionHash),
         );
         if (confirmation.status === "reverted") {
+          buyConfirmedReverted = true;
           updateExecutionLog("confirmation", {
             status: "error",
             detail: `The buy reverted in Robinhood block ${confirmation.blockNumber.toLocaleString()}.`,
@@ -2774,8 +2805,9 @@ export function App({ runtime }: AppProps) {
     } catch (reason) {
       const message = errorMessage(reason);
       if (tradeSide === "buy") failExecutionLog(message);
+      let failedPosition: PrivatePosition | undefined;
       if (rootAddress && positionId) {
-        patchPosition(rootAddress, positionId, {
+        failedPosition = patchPosition(rootAddress, positionId, {
           status:
             tradeSide === "buy"
               ? fundingDelivered
@@ -2787,8 +2819,89 @@ export function App({ runtime }: AppProps) {
           lastError: message,
         });
       }
+      if (
+        tradeSide === "buy" &&
+        fundingDelivered &&
+        rootAddress &&
+        positionId &&
+        positionAccountIndex !== undefined &&
+        failedPosition &&
+        (isCertainPreBroadcastRejection(reason) || buyConfirmedReverted)
+      ) {
+        await automaticallyReturnPositionsToWallet(rootAddress, [
+          { ...failedPosition, accountIndex: positionAccountIndex },
+        ]);
+        return;
+      }
       setStage(fundingDelivered || sellConfirmed ? "complete" : "idle");
       setError(message);
+    }
+  }
+
+  async function automaticallyReturnPositionsToWallet(
+    rootAddress: PrivateLaunchpadSession["account"],
+    candidates: readonly PrivatePosition[],
+  ): Promise<void> {
+    const pending = candidates.filter((position) => {
+      const key = `${rootAddress.toLowerCase()}:${position.id}`;
+      if (automaticWalletReturns.current.has(key)) return false;
+      automaticWalletReturns.current.add(key);
+      return true;
+    });
+    if (pending.length === 0) return;
+
+    try {
+      await stopPositionRecovery();
+      for (const position of pending) {
+        patchPosition(rootAddress, position.id, { status: "returning" });
+      }
+      setStage("returning");
+      updateExecutionLog("reconcile", {
+        status: "running",
+        detail:
+          "The buy was not broadcast. Approve the emergency return in MetaMask to send the fresh-account USDG directly to your connected wallet. This recovery is public onchain.",
+      });
+      const returned = await runtime.returnMultipleToWallet(
+        pending.map((position) => position.accountIndex),
+        (_step, status, detail) => {
+          updateExecutionLog("reconcile", {
+            status: status === "error" ? "error" : "running",
+            detail: detail ?? "Returning unused USDG to your wallet.",
+          });
+        },
+      );
+      setWalletReturnResult(returned);
+      for (const position of pending) {
+        patchPosition(rootAddress, position.id, {
+          status: "closed",
+          lastError: undefined,
+        });
+      }
+      updateExecutionLog("reconcile", {
+        status: "done",
+        detail:
+          returned.amountReturned > 0n
+            ? `${formatUsdcPrecise(returned.amountReturned)} USDG returned directly to ${shorten(returned.recipient)}.`
+            : "The fresh account is already empty; no duplicate recovery transaction was submitted.",
+      });
+      setError(undefined);
+      setStage("complete");
+    } catch (recoveryReason) {
+      const recoveryMessage = errorMessage(recoveryReason);
+      for (const position of pending) {
+        patchPosition(rootAddress, position.id, {
+          status: "return-failed",
+          lastError: recoveryMessage,
+        });
+      }
+      updateExecutionLog("reconcile", {
+        status: "error",
+        detail: `Automatic wallet recovery did not complete: ${recoveryMessage}`,
+      });
+      setError(
+        `The buy was not broadcast, and the USDG remains in the saved fresh account. Automatic wallet recovery did not complete: ${recoveryMessage}`,
+      );
+      setStage("complete");
     }
   }
 
