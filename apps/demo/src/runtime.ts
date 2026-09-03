@@ -298,6 +298,7 @@ export function createLiveRuntime<
     }
 
     if (!identitySignatureRequest) {
+      const requestGeneration = walletConnectionGeneration;
       const rawRequest = Promise.resolve().then(() =>
         config.signIdentity({
           address: activeAddress,
@@ -308,7 +309,10 @@ export function createLiveRuntime<
       identitySignatureRequestAddress = activeAddress;
       rawRequest.then(
         (signature) => {
-          if (connectedAddress?.toLowerCase() === activeAddress.toLowerCase()) {
+          if (
+            requestGeneration === walletConnectionGeneration &&
+            connectedAddress?.toLowerCase() === activeAddress.toLowerCase()
+          ) {
             identitySignature = signature;
           }
           if (identitySignatureRequest === rawRequest) {
@@ -357,6 +361,7 @@ export function createLiveRuntime<
         }
       : {}),
     async prepareIdentity(preferredAccountIndex) {
+      const prepareGeneration = walletConnectionGeneration;
       const accountIndex =
         preferredAccountIndex ??
         (typeof config.accountIndex === "function"
@@ -371,11 +376,22 @@ export function createLiveRuntime<
       if (!activeIdentitySignature) {
         activeIdentitySignature = await signPrivateIdentity(activeAddress);
       }
+      if (prepareGeneration !== walletConnectionGeneration) {
+        throw new Error(
+          "The wallet connection was replaced by another request",
+        );
+      }
       identitySignature = activeIdentitySignature;
-      session = await config.client.deriveSession(
+      const nextSession = await config.client.deriveSession(
         activeIdentitySignature,
         accountIndex,
       );
+      if (prepareGeneration !== walletConnectionGeneration) {
+        throw new Error(
+          "The wallet connection was replaced by another request",
+        );
+      }
+      session = nextSession;
       return {
         connectedAddress: activeAddress,
         storageScope: browserRecoveryScope(activeIdentitySignature),

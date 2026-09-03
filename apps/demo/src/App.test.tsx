@@ -150,7 +150,12 @@ describe("Plank interface", () => {
       connectWalletFallback,
     });
 
-    fireEvent.click(screen.getByRole("button", { name: /connect metamask/i }));
+    expect(
+      screen.getByRole("button", { name: /connect with metamask mobile/i }),
+    ).toBeTruthy();
+    fireEvent.click(
+      screen.getByRole("button", { name: /connect metamask extension/i }),
+    );
     const fallback = await screen.findByRole("button", {
       name: /use metamask mobile/i,
     });

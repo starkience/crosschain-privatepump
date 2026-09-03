@@ -61,6 +61,29 @@ describe("MetaMask Robinhood connection", () => {
     const calls: string[] = [];
     const request = vi.fn(async ({ method }: { method: string }) => {
       calls.push(method);
+      if (method === "wallet_requestPermissions") return [];
+      if (method === "eth_accounts") return [address];
+      if (method === "eth_chainId") return "0x1237";
+      throw new Error(`unexpected method: ${method}`);
+    });
+
+    await expect(connectMetaMask({ request } as Eip1193Provider)).resolves.toBe(
+      address,
+    );
+    expect(calls).toEqual([
+      "wallet_requestPermissions",
+      "eth_accounts",
+      "eth_chainId",
+    ]);
+  });
+
+  it("falls back when account permissions are unsupported", async () => {
+    const calls: string[] = [];
+    const request = vi.fn(async ({ method }: { method: string }) => {
+      calls.push(method);
+      if (method === "wallet_requestPermissions") {
+        throw Object.assign(new Error("unsupported"), { code: 4200 });
+      }
       if (method === "eth_requestAccounts") return [address];
       if (method === "eth_chainId") return "0x1237";
       throw new Error(`unexpected method: ${method}`);
@@ -69,6 +92,10 @@ describe("MetaMask Robinhood connection", () => {
     await expect(connectMetaMask({ request } as Eip1193Provider)).resolves.toBe(
       address,
     );
-    expect(calls).toEqual(["eth_requestAccounts", "eth_chainId"]);
+    expect(calls).toEqual([
+      "wallet_requestPermissions",
+      "eth_requestAccounts",
+      "eth_chainId",
+    ]);
   });
 });

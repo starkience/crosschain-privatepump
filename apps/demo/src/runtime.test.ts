@@ -344,6 +344,47 @@ describe("live frontend runtime", () => {
     });
   });
 
+  it("does not let a stale extension signature replace the fallback identity", async () => {
+    const mobileAddress =
+      "0x4444444444444444444444444444444444444444" as PrivateLaunchpadSession["account"];
+    let resolveExtensionSignature!: (value: string) => void;
+    const extensionSignature = new Promise<string>((resolve) => {
+      resolveExtensionSignature = resolve;
+    });
+    const deriveSession = vi.fn(async () => session);
+    const signIdentity = vi.fn(({ address: signingAddress }) =>
+      signingAddress === address
+        ? extensionSignature
+        : Promise.resolve("mobile-signature"),
+    );
+    const runtime = createLiveRuntime({
+      appId: "launch.example",
+      accountIndex: 3,
+      client: { deriveSession } as unknown as PrivateLaunchpadClient,
+      adapter: { id: "host", chainId: 84532 } as LaunchpadAdapter<
+        LaunchDraft,
+        never
+      >,
+      connectWallet: async () => address,
+      connectWalletFallback: async () => mobileAddress,
+      signIdentity,
+      buildOpenIntent: (intent) => intent,
+    });
+
+    const stalePreparation = runtime.prepareIdentity();
+    await vi.waitFor(() => expect(signIdentity).toHaveBeenCalledOnce());
+    await runtime.connectWalletFallback?.();
+    const fallbackPreparation = runtime.prepareIdentity();
+    resolveExtensionSignature("extension-signature");
+
+    await expect(stalePreparation).rejects.toThrow(/connection was replaced/i);
+    await expect(fallbackPreparation).resolves.toMatchObject({
+      connectedAddress: mobileAddress,
+    });
+    expect(deriveSession).toHaveBeenCalledOnce();
+    expect(deriveSession).toHaveBeenCalledWith("mobile-signature", 3);
+  });
+
   it("does not stack identity signature requests after a timeout", async () => {
     vi.useFakeTimers();
     try {

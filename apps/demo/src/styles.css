@@ -5090,6 +5090,18 @@ body {
   display: none;
 }
 
+.pons-nav-actions .wallet-connect-mobile[data-connected="false"] {
+  border-color: var(--border);
+  background: var(--surface);
+  color: var(--foreground-secondary);
+}
+
+.pons-nav-actions
+  .wallet-connect-mobile[data-connected="false"]
+  .wallet-connect-icon {
+  display: block;
+}
+
 .pons-nav-actions .nav-icon {
   width: 40px;
   padding: 0;

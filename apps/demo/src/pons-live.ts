@@ -296,13 +296,21 @@ async function createMobileMetaMaskClient(): Promise<MetaMaskConnectClient> {
 export async function connectMetaMask(
   provider: Eip1193Provider,
 ): Promise<Address> {
-  // Request the account first because this is the call MetaMask uses to open
-  // its approval UI. A preliminary eth_chainId request can hang forever when
-  // the extension's background stream is stale, leaving the user with no
-  // visible wallet prompt at all.
-  const accounts = await provider.request({
-    method: "eth_requestAccounts",
-  });
+  // Request account permission before all passive reads. Unlike
+  // eth_requestAccounts on an already-authorized origin, this opens MetaMask's
+  // account approval/unlock UI instead of returning silently. Older providers
+  // that do not implement wallet_requestPermissions retain the standard path.
+  let accounts: unknown;
+  try {
+    await provider.request({
+      method: "wallet_requestPermissions",
+      params: [{ eth_accounts: {} }],
+    });
+    accounts = await provider.request({ method: "eth_accounts" });
+  } catch (error) {
+    if (!isUnsupportedProviderMethod(error)) throw error;
+    accounts = await provider.request({ method: "eth_requestAccounts" });
+  }
   if (!Array.isArray(accounts) || !isAddress(accounts[0])) {
     throw new Error("wallet did not return an EVM account");
   }
@@ -433,5 +441,19 @@ function isUnknownChainError(error: unknown): boolean {
   };
   return (
     walletError.code === 4902 || walletError.data?.originalError?.code === 4902
+  );
+}
+
+function isUnsupportedProviderMethod(error: unknown): boolean {
+  if (!error || typeof error !== "object") return false;
+  const walletError = error as {
+    code?: unknown;
+    data?: { originalError?: { code?: unknown } };
+  };
+  return (
+    walletError.code === 4200 ||
+    walletError.code === -32601 ||
+    walletError.data?.originalError?.code === 4200 ||
+    walletError.data?.originalError?.code === -32601
   );
 }

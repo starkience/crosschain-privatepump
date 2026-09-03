@@ -14,6 +14,7 @@ import { ArrowRightIcon } from "@phosphor-icons/react/dist/csr/ArrowRight";
 import { CaretDownIcon } from "@phosphor-icons/react/dist/csr/CaretDown";
 import { CoinsIcon } from "@phosphor-icons/react/dist/csr/Coins";
 import { CurrencyCircleDollarIcon } from "@phosphor-icons/react/dist/csr/CurrencyCircleDollar";
+import { DeviceMobileIcon } from "@phosphor-icons/react/dist/csr/DeviceMobile";
 import { GiftIcon } from "@phosphor-icons/react/dist/csr/Gift";
 import { GlobeSimpleIcon } from "@phosphor-icons/react/dist/csr/GlobeSimple";
 import { ImageIcon } from "@phosphor-icons/react/dist/csr/Image";
@@ -1018,8 +1019,12 @@ export function App({ runtime }: AppProps) {
   const [connectedWallet, setConnectedWallet] =
     useState<PrivateLaunchpadSession["account"]>();
   const [walletConnecting, setWalletConnecting] = useState(false);
+  const [walletConnectionRoute, setWalletConnectionRoute] = useState<
+    "extension" | "mobile"
+  >();
   const [walletSigning, setWalletSigning] = useState(false);
   const [walletError, setWalletError] = useState<string>();
+  const walletConnectionAttempt = useRef(0);
 
   const [name, setName] = useState("Night Market");
   const [symbol, setSymbol] = useState("NITE");
@@ -1924,24 +1929,33 @@ export function App({ runtime }: AppProps) {
   }
 
   async function connectEvmWallet() {
-    return connectWithWallet(() => runtime.connectWallet());
+    return connectWithWallet("extension", () => runtime.connectWallet());
   }
 
   async function connectMobileEvmWallet() {
     if (!runtime.connectWalletFallback) return undefined;
-    return connectWithWallet(() => runtime.connectWalletFallback!());
+    return connectWithWallet("mobile", () => runtime.connectWalletFallback!());
   }
 
   async function connectWithWallet(
+    route: "extension" | "mobile",
     connectWallet: () => Promise<PrivateLaunchpadSession["account"]>,
   ) {
-    if (walletConnecting) return undefined;
+    if (
+      (walletConnecting && route === "extension") ||
+      walletConnectionRoute === "mobile"
+    )
+      return undefined;
+    const attempt = ++walletConnectionAttempt.current;
     setWalletConnecting(true);
+    setWalletConnectionRoute(route);
     setWalletError(undefined);
     try {
       await connectWallet();
+      if (attempt !== walletConnectionAttempt.current) return undefined;
       setWalletSigning(true);
       const prepared = await runtime.prepareIdentity(0);
+      if (attempt !== walletConnectionAttempt.current) return undefined;
       rememberStorageScope(prepared);
       setConnectedWallet(prepared.connectedAddress);
       const restored = restorePositions(prepared.connectedAddress);
@@ -1973,11 +1987,16 @@ export function App({ runtime }: AppProps) {
       setIdentity(prepared);
       return prepared.connectedAddress;
     } catch (reason) {
-      setWalletError(errorMessage(reason));
+      if (attempt === walletConnectionAttempt.current) {
+        setWalletError(errorMessage(reason));
+      }
       return undefined;
     } finally {
-      setWalletSigning(false);
-      setWalletConnecting(false);
+      if (attempt === walletConnectionAttempt.current) {
+        setWalletSigning(false);
+        setWalletConnecting(false);
+        setWalletConnectionRoute(undefined);
+      }
     }
   }
 
@@ -3184,34 +3203,58 @@ export function App({ runtime }: AppProps) {
                 )}
               </button>
               {runtime.mode === "live" ? (
-                <button
-                  className="wallet-connect"
-                  type="button"
-                  data-connected={!!connectedWallet}
-                  disabled={walletConnecting || busy}
-                  aria-label={
-                    connectedWallet
-                      ? `MetaMask connected: ${connectedWallet}`
-                      : "Connect MetaMask"
-                  }
-                  onClick={connectEvmWallet}
-                >
-                  <WalletIcon
-                    className="wallet-connect-icon"
-                    size={14}
-                    weight="duotone"
-                    aria-hidden="true"
-                  />
-                  <span>
-                    {walletConnecting
-                      ? walletSigning
-                        ? "Check MetaMask…"
-                        : "Connecting…"
-                      : connectedWallet
-                        ? shorten(connectedWallet)
-                        : "Connect"}
-                  </span>
-                </button>
+                <>
+                  <button
+                    className="wallet-connect"
+                    type="button"
+                    data-connected={!!connectedWallet}
+                    disabled={walletConnecting || busy}
+                    aria-label={
+                      connectedWallet
+                        ? `MetaMask connected: ${connectedWallet}`
+                        : "Connect MetaMask extension"
+                    }
+                    onClick={connectEvmWallet}
+                  >
+                    <WalletIcon
+                      className="wallet-connect-icon"
+                      size={14}
+                      weight="duotone"
+                      aria-hidden="true"
+                    />
+                    <span>
+                      {walletConnecting && walletConnectionRoute === "extension"
+                        ? walletSigning
+                          ? "Check MetaMask…"
+                          : "Connecting…"
+                        : connectedWallet
+                          ? shorten(connectedWallet)
+                          : "Connect"}
+                    </span>
+                  </button>
+                  {!connectedWallet && runtime.connectWalletFallback && (
+                    <button
+                      className="wallet-connect wallet-connect-mobile"
+                      type="button"
+                      data-connected="false"
+                      disabled={busy || walletConnectionRoute === "mobile"}
+                      aria-label="Connect with MetaMask mobile"
+                      onClick={connectMobileEvmWallet}
+                    >
+                      <DeviceMobileIcon
+                        className="wallet-connect-icon"
+                        size={14}
+                        weight="duotone"
+                        aria-hidden="true"
+                      />
+                      <span>
+                        {walletConnectionRoute === "mobile"
+                          ? "Pairing…"
+                          : "Mobile"}
+                      </span>
+                    </button>
+                  )}
+                </>
               ) : (
                 <span className="wallet-preview">
                   <WalletIcon size={14} weight="duotone" aria-hidden="true" />
