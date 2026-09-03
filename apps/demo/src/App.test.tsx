@@ -1297,6 +1297,43 @@ describe("Plank interface", () => {
     ).toContain('"status":"closed"');
   });
 
+  it("shows the live token holding and sells a selected percentage", async () => {
+    const runtime = fixture();
+
+    fireEvent.click(screen.getByRole("button", { name: /^back$/i }));
+    fireEvent.click(screen.getByRole("button", { name: /night market/i }));
+    fireEvent.click(screen.getByRole("button", { name: /buy privately/i }));
+    fireEvent.click(
+      await screen.findByRole("button", { name: /sell this position/i }),
+    );
+
+    expect(screen.getByLabelText("Token amount").textContent).toBe("1,240,000");
+    expect(
+      screen.getByText(/Available: 1,240,000 \$NITE · Max selected/i),
+    ).toBeTruthy();
+    expect(screen.getByRole("button", { name: /sell 25%/i })).toBeTruthy();
+    expect(screen.getByRole("button", { name: /sell 50%/i })).toBeTruthy();
+    expect(screen.getByRole("button", { name: /sell 75%/i })).toBeTruthy();
+    expect(screen.getByRole("button", { name: /sell max/i })).toBeTruthy();
+
+    fireEvent.click(screen.getByRole("button", { name: /sell 50%/i }));
+    expect(screen.getByLabelText("Token amount").textContent).toBe("620,000");
+    fireEvent.click(screen.getByRole("button", { name: /sell privately/i }));
+
+    await waitFor(() =>
+      expect(runtime.sell).toHaveBeenCalledWith(
+        expect.objectContaining({ amountIn: 620_000n * 10n ** 18n }),
+      ),
+    );
+    await waitFor(() => {
+      const stored = localStorage.getItem(
+        `privatepons-private-positions-v2:8453:0x${"aa".repeat(32)}`,
+      );
+      expect(stored).toContain('"status":"held"');
+      expect(stored).toContain(`"tokenAmount":"${620_000n * 10n ** 18n}"`);
+    });
+  });
+
   it("restores a held private position after a page refresh", async () => {
     const firstRuntime = fixture("live");
     vi.mocked(firstRuntime.readPrivateBalance).mockResolvedValue(25_000_000n);

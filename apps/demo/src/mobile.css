@@ -340,7 +340,8 @@
   }
 
   .pons-buy-card .swap-box input,
-  .pons-buy-card .swap-box strong {
+  .pons-buy-card .swap-box strong,
+  .pons-buy-card .swap-box output {
     font-size: clamp(28px, 9vw, 37px);
   }
 

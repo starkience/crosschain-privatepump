@@ -1313,7 +1313,8 @@ a {
 }
 
 .swap-box input,
-.swap-box strong {
+.swap-box strong,
+.swap-box output {
   min-width: 0;
   width: 100%;
   padding: 0;
@@ -4308,7 +4309,8 @@ a {
   }
 
   .pons-buy-card .swap-box input,
-  .pons-buy-card .swap-box strong {
+  .pons-buy-card .swap-box strong,
+  .pons-buy-card .swap-box output {
     font-size: clamp(29px, 9vw, 38px);
   }
 
@@ -5746,9 +5748,60 @@ body {
 }
 
 .pons-buy-card .swap-box input,
-.pons-buy-card .swap-box strong {
+.pons-buy-card .swap-box strong,
+.pons-buy-card .swap-box output {
   font-size: 38px;
   font-weight: 450;
+}
+
+.pons-buy-card .swap-box output {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.pons-buy-card .sell-amount-box {
+  min-height: 184px;
+}
+
+.pons-buy-card .pons-sell-presets {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 7px;
+  margin: 13px 0 0;
+}
+
+.pons-buy-card .pons-sell-presets button {
+  min-height: 30px;
+  border: 1px solid color-mix(in srgb, var(--purple) 26%, var(--border));
+  border-radius: 9px;
+  background: color-mix(in srgb, var(--surface) 82%, transparent);
+  color: var(--foreground-secondary);
+  cursor: pointer;
+  font-family: "IBM Plex Mono", monospace;
+  font-size: 9px;
+  font-weight: 600;
+  transition:
+    border-color 150ms ease,
+    background 150ms ease,
+    color 150ms ease;
+}
+
+.pons-buy-card .pons-sell-presets button:hover:not(:disabled) {
+  border-color: color-mix(in srgb, var(--purple) 65%, var(--border));
+  color: var(--foreground);
+}
+
+.pons-buy-card .pons-sell-presets button[data-active="true"] {
+  border-color: var(--purple);
+  background: var(--purple);
+  color: #241827;
+}
+
+.pons-buy-card .pons-sell-presets button:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
 }
 
 .pons-buy-card .swap-arrow {

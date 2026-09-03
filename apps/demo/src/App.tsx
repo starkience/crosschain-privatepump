@@ -87,6 +87,7 @@ type PrivateExecutionState = "ready" | "checking" | "unavailable";
 
 const USDC_SCALE = 1_000_000n;
 const COMMON_USDC_AMOUNTS = [25, 50, 100, 250] as const;
+const SELL_PERCENTAGES = [25, 50, 75, 100] as const;
 const MINIMUM_PRIVATE_REST_MINUTES = 2;
 const RANDOM_PRIVATE_REST_MINUTES = 4;
 const FRESH_ACCOUNT_BALANCE_READS = 20;
@@ -1082,6 +1083,7 @@ export function App({ runtime }: AppProps) {
   const [token, setToken] = useState(selectedMarket.token);
   const [tradeAmount, setTradeAmount] = useState(25);
   const [tradeSide, setTradeSide] = useState<"buy" | "sell">("buy");
+  const [sellPercentage, setSellPercentage] = useState(100);
   const [positions, setPositions] = useState<PrivatePosition[]>([]);
   const [portfolioSnapshots, setPortfolioSnapshots] = useState<
     Record<string, PortfolioSnapshot>
@@ -1271,10 +1273,17 @@ export function App({ runtime }: AppProps) {
   const activePosition = positions.find(
     (position) => position.id === activePositionId,
   );
+  const activeTokenBalance = activePosition
+    ? (portfolioSnapshots[activePosition.id]?.tokenBalance ??
+      (activePosition.tokenAmount ? BigInt(activePosition.tokenAmount) : 0n))
+    : 0n;
+  const selectedSellAmount =
+    sellPercentage === 100
+      ? activeTokenBalance
+      : (activeTokenBalance * BigInt(sellPercentage)) / 100n;
   const holding = Boolean(
     activePosition &&
-    (activePosition.status === "held" ||
-      (portfolioSnapshots[activePosition.id]?.tokenBalance ?? 0n) > 0n),
+    (activePosition.status === "held" || activeTokenBalance > 0n),
   );
 
   const launchDraft = useMemo<LaunchDraft>(
@@ -1292,17 +1301,10 @@ export function App({ runtime }: AppProps) {
     () => ({
       token,
       amountIn:
-        tradeSide === "buy"
-          ? usdcBaseUnits(tradeAmount)
-          : activePosition
-            ? (portfolioSnapshots[activePosition.id]?.tokenBalance ??
-              (activePosition.tokenAmount
-                ? BigInt(activePosition.tokenAmount)
-                : 0n))
-            : 0n,
+        tradeSide === "buy" ? usdcBaseUnits(tradeAmount) : selectedSellAmount,
       slippageBps: 100,
     }),
-    [activePosition, portfolioSnapshots, token, tradeAmount, tradeSide],
+    [selectedSellAmount, token, tradeAmount, tradeSide],
   );
   const busy = !["idle", "complete"].includes(stage);
   const privateBalanceAvailable =
@@ -1919,6 +1921,7 @@ export function App({ runtime }: AppProps) {
     setSelectedMarket(market);
     setToken(market.token);
     setTradeSide("buy");
+    setSellPercentage(100);
     setActivePositionId(undefined);
     setStage("idle");
     setIdentity(undefined);
@@ -2843,6 +2846,13 @@ export function App({ runtime }: AppProps) {
         if (fullBalance <= 0n) {
           throw new Error("This fresh account no longer holds the token");
         }
+        const amountToSell =
+          sellPercentage === 100
+            ? fullBalance
+            : (fullBalance * BigInt(sellPercentage)) / 100n;
+        if (amountToSell <= 0n) {
+          throw new Error("The selected sell amount is too small");
+        }
         patchPosition(rootAddress, positionId, {
           status: "selling",
           tokenAmount: fullBalance.toString(),
@@ -2850,7 +2860,7 @@ export function App({ runtime }: AppProps) {
         setStage("executing");
         const sold = await runtime.sell({
           token: activePosition.token,
-          amountIn: fullBalance,
+          amountIn: amountToSell,
           slippageBps: tradeDraft.slippageBps,
         });
         setLastTrade(sold);
@@ -2869,18 +2879,28 @@ export function App({ runtime }: AppProps) {
           );
         }
         sellConfirmed = true;
+        const remainingBalance = fullBalance - amountToSell;
         patchPosition(rootAddress, positionId, {
           status: "returning",
-          tokenAmount: "0",
+          tokenAmount: remainingBalance.toString(),
         });
         setStage("returning");
         const returned = await runtime.returnToPool();
         setReturnResult(returned);
         setPrivateBalance((balance) => balance + returned.amountReturned);
         patchPosition(rootAddress, positionId, {
-          status: "closed",
+          status: remainingBalance > 0n ? "held" : "closed",
+          tokenAmount: remainingBalance.toString(),
           lastError: undefined,
         });
+        setPortfolioSnapshots((current) => ({
+          ...current,
+          [positionId!]: {
+            status: remainingBalance > 0n ? "verified" : "empty",
+            tokenBalance: remainingBalance,
+            checkedAt: Date.now(),
+          },
+        }));
         setStage("complete");
       }
     } catch (reason) {
@@ -3005,8 +3025,13 @@ export function App({ runtime }: AppProps) {
     }
   }
 
-  async function returnPositionToPool(position: PrivatePosition) {
-    if (!connectedWallet || busy) return;
+  async function returnPositionToPool(
+    position: PrivatePosition,
+    remainingTokenBalance = position.tokenAmount
+      ? BigInt(position.tokenAmount)
+      : 0n,
+  ) {
+    if (!connectedWallet) return;
     setError(undefined);
     try {
       await stopPositionRecovery();
@@ -3022,9 +3047,18 @@ export function App({ runtime }: AppProps) {
       setReturnResult(returned);
       setPrivateBalance((balance) => balance + returned.amountReturned);
       patchPosition(connectedWallet, position.id, {
-        status: "closed",
+        status: remainingTokenBalance > 0n ? "held" : "closed",
+        tokenAmount: remainingTokenBalance.toString(),
         lastError: undefined,
       });
+      setPortfolioSnapshots((current) => ({
+        ...current,
+        [position.id]: {
+          status: remainingTokenBalance > 0n ? "verified" : "empty",
+          tokenBalance: remainingTokenBalance,
+          checkedAt: Date.now(),
+        },
+      }));
       setStage("complete");
     } catch (reason) {
       patchPosition(connectedWallet, position.id, {
@@ -3179,6 +3213,7 @@ export function App({ runtime }: AppProps) {
       }
     }
     const liveBalance = portfolioSnapshots[position.id]?.tokenBalance ?? 0n;
+    setSellPercentage(100);
     setTradeSide(
       position.status === "held" || liveBalance > 0n ? "sell" : "buy",
     );
@@ -3242,11 +3277,25 @@ export function App({ runtime }: AppProps) {
       }
 
       if (position.status === "selling") {
+        let remainingTokenBalance = position.tokenAmount
+          ? BigInt(position.tokenAmount)
+          : 0n;
+        if (position.token) {
+          try {
+            remainingTokenBalance = await readAccountTokenBalanceWithRetry(
+              runtime,
+              prepared.session.account,
+              position.token,
+            );
+          } catch {
+            // Preserve the saved balance if the RPC is temporarily unavailable.
+          }
+        }
         patchPosition(connectedWallet, position.id, {
           status: "returning",
-          tokenAmount: "0",
+          tokenAmount: remainingTokenBalance.toString(),
         });
-        await returnPositionToPool(position);
+        await returnPositionToPool(position, remainingTokenBalance);
         return;
       }
       if (position.status === "buying" && position.token) {
@@ -4270,7 +4319,10 @@ export function App({ runtime }: AppProps) {
                     <button
                       className={tradeSide === "sell" ? "active" : ""}
                       disabled={!holding}
-                      onClick={() => setTradeSide("sell")}
+                      onClick={() => {
+                        setTradeSide("sell");
+                        setSellPercentage(100);
+                      }}
                     >
                       Sell
                     </button>
@@ -4297,37 +4349,39 @@ export function App({ runtime }: AppProps) {
                   </label>
 
                   <div className="swap-stack">
-                    <div className="swap-box">
+                    <div
+                      className={`swap-box${
+                        tradeSide === "sell" ? " sell-amount-box" : ""
+                      }`}
+                    >
                       <span>
                         {tradeSide === "buy" ? "YOU PAY" : "YOU SELL"}
                       </span>
                       <div>
-                        <input
-                          className="numeric-amount-input"
-                          aria-label={
-                            tradeSide === "buy" ? "USDC amount" : "Token amount"
-                          }
-                          type="number"
-                          min="0"
-                          step="0.000001"
-                          value={
-                            tradeSide === "buy"
-                              ? tradeAmount || ""
-                              : activePosition?.tokenAmount
-                                ? formatTokenAmount(
-                                    BigInt(activePosition.tokenAmount),
-                                  )
-                                : ""
-                          }
-                          disabled={busy || tradeSide === "sell"}
-                          onWheel={releaseAmountInputOnWheel}
-                          onKeyDown={preventAmountArrowStep}
-                          onChange={(event) =>
-                            setTradeAmount(
-                              nonNegativeAmount(event.target.value),
-                            )
-                          }
-                        />
+                        {tradeSide === "buy" ? (
+                          <input
+                            className="numeric-amount-input"
+                            aria-label="USDC amount"
+                            type="number"
+                            min="0"
+                            step="0.000001"
+                            value={tradeAmount || ""}
+                            disabled={busy}
+                            onWheel={releaseAmountInputOnWheel}
+                            onKeyDown={preventAmountArrowStep}
+                            onChange={(event) =>
+                              setTradeAmount(
+                                nonNegativeAmount(event.target.value),
+                              )
+                            }
+                          />
+                        ) : (
+                          <output aria-label="Token amount" aria-live="polite">
+                            {selectedSellAmount > 0n
+                              ? formatTokenAmount(selectedSellAmount)
+                              : "—"}
+                          </output>
+                        )}
                         <b>
                           {tradeSide === "buy"
                             ? "USDC"
@@ -4337,8 +4391,33 @@ export function App({ runtime }: AppProps) {
                       <small>
                         {tradeSide === "buy"
                           ? `Ready balance: ${formatUsdc(privateBalanceAvailable)} USDC`
-                          : "Held by this onchain-separated position account"}
+                          : `Available: ${formatTokenAmount(activeTokenBalance)} $${activePosition?.symbol ?? "TOKEN"} · ${sellPercentage === 100 ? "Max" : `${sellPercentage}%`} selected`}
                       </small>
+                      {tradeSide === "sell" && (
+                        <div
+                          className="pons-sell-presets"
+                          role="group"
+                          aria-label="Sell amount"
+                        >
+                          {SELL_PERCENTAGES.map((percentage) => (
+                            <button
+                              key={percentage}
+                              type="button"
+                              aria-label={
+                                percentage === 100
+                                  ? "Sell max"
+                                  : `Sell ${percentage}%`
+                              }
+                              aria-pressed={sellPercentage === percentage}
+                              data-active={sellPercentage === percentage}
+                              disabled={busy}
+                              onClick={() => setSellPercentage(percentage)}
+                            >
+                              {percentage === 100 ? "Max" : `${percentage}%`}
+                            </button>
+                          ))}
+                        </div>
+                      )}
                       {tradeSide === "buy" && (
                         <button
                           className="pons-inline-deposit"
@@ -4418,7 +4497,8 @@ export function App({ runtime }: AppProps) {
                       </div>
                     )}
 
-                  {runtime.mode === "live" &&
+                  {tradeSide === "buy" &&
+                    runtime.mode === "live" &&
                     privateExecutionState !== "ready" && (
                       <div
                         className="pons-private-ready-window relayer-status-window"
@@ -4479,7 +4559,8 @@ export function App({ runtime }: AppProps) {
                       disabled={
                         !tradeValid ||
                         busy ||
-                        (runtime.mode === "live" &&
+                        (tradeSide === "buy" &&
+                          runtime.mode === "live" &&
                           privateExecutionState !== "ready")
                       }
                       onClick={trade}
@@ -4488,10 +4569,12 @@ export function App({ runtime }: AppProps) {
                         {busyLabel ??
                           (selectedMarket.privateTrading === false
                             ? "Graduated trading unavailable"
-                            : runtime.mode === "live" &&
+                            : tradeSide === "buy" &&
+                                runtime.mode === "live" &&
                                 privateExecutionState === "checking"
                               ? "Checking relayer…"
-                              : runtime.mode === "live" &&
+                              : tradeSide === "buy" &&
+                                  runtime.mode === "live" &&
                                   privateExecutionState === "unavailable"
                                 ? "Relayer temporarily unavailable"
                                 : tradeFundingResting
@@ -4507,6 +4590,7 @@ export function App({ runtime }: AppProps) {
                           className="button button-brand"
                           onClick={() => {
                             setTradeSide("sell");
+                            setSellPercentage(100);
                             setStage("idle");
                             setTransactionHash(undefined);
                             setLastTrade(undefined);
