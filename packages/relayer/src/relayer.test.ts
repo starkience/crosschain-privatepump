@@ -59,7 +59,7 @@ async function signedRequest(
 
 function fixture(
   accountNonce?: bigint,
-  relayerGasBalance = 1n,
+  relayerGasBalance = 2_000_000n,
   options: {
     tokenBalances?: bigint[];
     simulationErrors?: Error[];
@@ -76,6 +76,7 @@ function fixture(
   const sleep = vi.fn(async () => undefined);
   const publicClient = {
     getBalance: vi.fn(async () => relayerGasBalance),
+    getGasPrice: vi.fn(async () => 1n),
     getBytecode: vi.fn(async () =>
       accountNonce === undefined ? undefined : ("0x01" as Hex),
     ),
@@ -125,14 +126,14 @@ describe("private launchpad relayer", () => {
     expect(simulateContract).not.toHaveBeenCalled();
   });
 
-  it("rejects an empty gas account before broadcast", async () => {
+  it("rejects an underfunded gas account before simulation and broadcast", async () => {
     const request = await signedRequest();
     const { relayer, simulateContract, writeContract } = fixture(undefined, 0n);
 
     await expect(relayer.relay(request)).rejects.toThrow(
-      /relayer gas account .* has no Robinhood ETH/,
+      /relayer gas account .* has insufficient balance of Robinhood ETH/,
     );
-    expect(simulateContract).toHaveBeenCalledOnce();
+    expect(simulateContract).not.toHaveBeenCalled();
     expect(writeContract).not.toHaveBeenCalled();
   });
 
@@ -148,9 +149,13 @@ describe("private launchpad relayer", () => {
         }),
       },
     ]);
-    const { relayer, simulateContract, sleep } = fixture(undefined, 1n, {
-      tokenBalances: [0n, 4n, 10n],
-    });
+    const { relayer, simulateContract, sleep } = fixture(
+      undefined,
+      2_000_000n,
+      {
+        tokenBalances: [0n, 4n, 10n],
+      },
+    );
 
     await expect(relayer.relay(request)).resolves.toBe(TX_HASH);
     expect(sleep).toHaveBeenCalledTimes(2);
@@ -169,13 +174,17 @@ describe("private launchpad relayer", () => {
         }),
       },
     ]);
-    const { relayer, simulateContract, sleep } = fixture(undefined, 1n, {
-      tokenBalances: [10n],
-      simulationErrors: [
-        new Error('The contract function "deployAndExecute" reverted.'),
-        new Error('The contract function "deployAndExecute" reverted.'),
-      ],
-    });
+    const { relayer, simulateContract, sleep } = fixture(
+      undefined,
+      2_000_000n,
+      {
+        tokenBalances: [10n],
+        simulationErrors: [
+          new Error('The contract function "deployAndExecute" reverted.'),
+          new Error('The contract function "deployAndExecute" reverted.'),
+        ],
+      },
+    );
 
     await expect(relayer.relay(request)).resolves.toBe(TX_HASH);
     expect(simulateContract).toHaveBeenCalledTimes(3);
@@ -194,9 +203,13 @@ describe("private launchpad relayer", () => {
         }),
       },
     ]);
-    const { relayer, simulateContract, sleep } = fixture(undefined, 1n, {
-      tokenBalances: [0n, 0n, 0n, 0n, 0n, 0n],
-    });
+    const { relayer, simulateContract, sleep } = fixture(
+      undefined,
+      2_000_000n,
+      {
+        tokenBalances: [0n, 0n, 0n, 0n, 0n, 0n],
+      },
+    );
 
     await expect(relayer.relay(request)).rejects.toThrow(
       /funding is not visible.*available 0, required 10/i,
@@ -217,13 +230,17 @@ describe("private launchpad relayer", () => {
         }),
       },
     ]);
-    const { relayer, simulateContract, sleep } = fixture(undefined, 1n, {
-      tokenBalances: [10n],
-      simulationErrors: [
-        new Error('The contract function "deployAndExecute" reverted.'),
-        new Error('The contract function "deployAndExecute" reverted.'),
-      ],
-    });
+    const { relayer, simulateContract, sleep } = fixture(
+      undefined,
+      2_000_000n,
+      {
+        tokenBalances: [10n],
+        simulationErrors: [
+          new Error('The contract function "deployAndExecute" reverted.'),
+          new Error('The contract function "deployAndExecute" reverted.'),
+        ],
+      },
+    );
 
     await expect(relayer.relay(request)).resolves.toBe(TX_HASH);
     expect(simulateContract).toHaveBeenCalledTimes(3);

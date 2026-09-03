@@ -560,6 +560,34 @@ describe("live frontend runtime", () => {
     );
   });
 
+  it("checks relayer readiness before releasing private funds", async () => {
+    const preflightFunding = vi.fn(async () => {
+      throw new Error("relayer underfunded");
+    });
+    const fundSession = vi.fn();
+    const runtime = createLiveRuntime({
+      appId: "launch.example",
+      accountIndex: 3,
+      client: {
+        deriveSession: vi.fn(async () => session),
+        fundSession,
+      } as unknown as PrivateLaunchpadClient,
+      adapter: { id: "host", chainId: 84532 } as LaunchpadAdapter<
+        LaunchDraft,
+        never
+      >,
+      connectWallet: async () => address,
+      signIdentity: async () => "wallet-signature",
+      preflightFunding,
+      buildOpenIntent: (intent) => intent,
+    });
+
+    await runtime.prepareIdentity();
+    await expect(runtime.fund(draft)).rejects.toThrow(/relayer underfunded/);
+    expect(preflightFunding).toHaveBeenCalledOnce();
+    expect(fundSession).not.toHaveBeenCalled();
+  });
+
   it("launches from the saved account when an older bridge transfer resumes", async () => {
     const resumedSession: PrivateLaunchpadSession = {
       ...session,

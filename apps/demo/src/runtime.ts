@@ -158,6 +158,8 @@ export interface LiveRuntimeConfig<
   accountIndex: number | (() => Promise<number> | number);
   /** Use CCTP soft-finality attestations for Starknet-to-EVM funding. */
   fastFunding?: boolean;
+  /** Fail closed before private funds move when execution cannot be relayed. */
+  preflightFunding?(): Promise<void>;
   client: PrivateLaunchpadClient;
   adapter: LaunchpadAdapter<TOpenIntent, TCloseIntent>;
   connectWallet(): Promise<PrivateLaunchpadSession["account"]>;
@@ -461,6 +463,7 @@ export function createLiveRuntime<
       if (draft.bridgeAmount <= 0n) {
         throw new Error("STRK20 launch funding must be greater than zero");
       }
+      await config.preflightFunding?.();
       const result = await config.client.fundSession({
         signature: identity.identitySignature,
         accountIndex: identity.session.accountIndex,

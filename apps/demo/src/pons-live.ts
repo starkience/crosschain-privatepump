@@ -66,6 +66,10 @@ export async function createPrivatePonsLiveRuntime(
   environment: Readonly<Record<string, unknown>>,
 ): Promise<LaunchpadRuntime> {
   const client = await createPonsMainnetLiveClient(environment);
+  const relayerEndpoint = requiredBrowserString(
+    environment,
+    "VITE_PRIVATE_LAUNCHPAD_RELAYER_URL",
+  );
   const pons = ponsV2Adapter();
   let activeWalletProvider: Eip1193Provider | undefined;
   let walletProviderSelection = 0;
@@ -117,6 +121,7 @@ export async function createPrivatePonsLiveRuntime(
     networkName: "Robinhood Mainnet",
     accountIndex: randomAccountIndex,
     fastFunding: true,
+    preflightFunding: () => assertPrivateRelayerReady(relayerEndpoint),
     client,
     adapter: launchAdapter,
     connectWallet: selectInjectedMetaMask,
@@ -266,6 +271,70 @@ export async function createPrivatePonsLiveRuntime(
       },
     },
   });
+}
+
+export async function assertPrivateRelayerReady(
+  relayEndpoint: string,
+  fetchImplementation: typeof fetch = fetch,
+): Promise<void> {
+  const healthEndpoint = relayEndpoint.replace(
+    /\/v1\/relay(?:\?.*)?$/,
+    "/healthz",
+  );
+  if (healthEndpoint === relayEndpoint) {
+    throw new Error(
+      "The policy relayer health endpoint is misconfigured. Private funds were not moved.",
+    );
+  }
+
+  let response: Response;
+  try {
+    response = await fetchImplementation(healthEndpoint, {
+      method: "GET",
+      cache: "no-store",
+      headers: { accept: "application/json" },
+    });
+  } catch {
+    throw new Error(
+      "The policy relayer's availability could not be verified. Private funds were not moved.",
+    );
+  }
+
+  const body = (await response.json().catch(() => undefined)) as
+    | {
+        readyForBroadcast?: unknown;
+        gasBalanceWei?: unknown;
+        minimumGasBalanceWei?: unknown;
+      }
+    | undefined;
+  if (!response.ok || body?.readyForBroadcast !== true) {
+    const available = decimalString(body?.gasBalanceWei);
+    const required = decimalString(body?.minimumGasBalanceWei);
+    const balanceDetail =
+      available && required
+        ? ` (available ${available} wei; minimum ${required} wei)`
+        : "";
+    throw new Error(
+      `The PonsButPrivate relayer has insufficient Robinhood ETH for a fresh-account transaction${balanceDetail}. Private funds were not moved.`,
+    );
+  }
+}
+
+function decimalString(value: unknown): string | undefined {
+  return typeof value === "string" && /^(0|[1-9][0-9]*)$/.test(value)
+    ? value
+    : undefined;
+}
+
+function requiredBrowserString(
+  environment: Readonly<Record<string, unknown>>,
+  name: string,
+): string {
+  const value = environment[name];
+  if (typeof value !== "string" || !value.trim()) {
+    throw new Error(`${name} is required`);
+  }
+  return value;
 }
 
 async function createMobileMetaMaskClient(): Promise<MetaMaskConnectClient> {

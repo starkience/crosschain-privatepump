@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { decodeErrorResult, isHex, type Hex } from "viem";
 import {
   parseRelayRequest,
+  readRelayerGasReadiness,
   relayerFromEnv,
   type PrivateLaunchpadRelayer,
 } from "../../../packages/relayer/src/index.js";
@@ -67,14 +68,18 @@ export default async function handler(
 
     if (request.method === "GET" && path === "/healthz") {
       const relayerAddress = relayer.dependencies.relayerAccount.address;
-      const gasBalance = await relayer.dependencies.publicClient.getBalance({
-        address: relayerAddress,
-      });
+      const gas = await readRelayerGasReadiness(
+        relayer.dependencies.publicClient,
+        relayerAddress,
+      );
       return json(response, 200, {
         ok: true,
-        readyForBroadcast: gasBalance > 0n,
+        readyForBroadcast: gas.readyForBroadcast,
         relayerAddress,
-        gasBalanceWei: gasBalance.toString(),
+        gasBalanceWei: gas.gasBalance.toString(),
+        gasPriceWei: gas.gasPrice.toString(),
+        minimumGasBalanceWei: gas.minimumGasBalance.toString(),
+        minimumGasUnits: gas.minimumGasUnits.toString(),
       });
     }
 

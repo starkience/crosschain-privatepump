@@ -4,7 +4,10 @@ import {
   type ServerResponse,
 } from "node:http";
 import { randomUUID } from "node:crypto";
-import type { PrivateLaunchpadRelayer } from "./relayer.js";
+import {
+  readRelayerGasReadiness,
+  type PrivateLaunchpadRelayer,
+} from "./relayer.js";
 import { parseRelayRequest } from "./schema.js";
 import { tradeQuoteJson, type ClankerQuoteProvider } from "./clanker-quotes.js";
 
@@ -19,15 +22,19 @@ export function startRelayerServer(
     try {
       if (request.method === "GET" && request.url === "/healthz") {
         const relayerAddress = relayer.dependencies.relayerAccount.address;
-        const gasBalance = await relayer.dependencies.publicClient.getBalance({
-          address: relayerAddress,
-        });
+        const gas = await readRelayerGasReadiness(
+          relayer.dependencies.publicClient,
+          relayerAddress,
+        );
         return json(response, 200, {
           ok: true,
           clankerQuotes: !!options.quoteService,
-          readyForBroadcast: gasBalance > 0n,
+          readyForBroadcast: gas.readyForBroadcast,
           relayerAddress,
-          gasBalanceWei: gasBalance.toString(),
+          gasBalanceWei: gas.gasBalance.toString(),
+          gasPriceWei: gas.gasPrice.toString(),
+          minimumGasBalanceWei: gas.minimumGasBalance.toString(),
+          minimumGasUnits: gas.minimumGasUnits.toString(),
         });
       }
       if (request.method === "POST" && request.url === "/v1/clanker/quote") {

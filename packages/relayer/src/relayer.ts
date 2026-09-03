@@ -57,6 +57,40 @@ const EXECUTION_STATE_RETRY_MS = 750;
 const SIMULATION_ATTEMPTS = 4;
 const SIMULATION_RETRY_BASE_MS = 500;
 
+/** Conservative gas ceilings for one Robinhood policy-relayer transaction. */
+export const RELAYER_FRESH_ACCOUNT_GAS_UNITS = 2_000_000n;
+export const RELAYER_DEPLOYED_ACCOUNT_GAS_UNITS = 500_000n;
+
+export interface RelayerGasReadiness {
+  readonly readyForBroadcast: boolean;
+  readonly gasBalance: bigint;
+  readonly gasPrice: bigint;
+  readonly minimumGasBalance: bigint;
+  readonly minimumGasUnits: bigint;
+}
+
+export async function readRelayerGasReadiness(
+  publicClient: PublicClient,
+  relayerAddress: Address,
+  accountDeployed = false,
+): Promise<RelayerGasReadiness> {
+  const [gasBalance, gasPrice] = await Promise.all([
+    publicClient.getBalance({ address: relayerAddress }),
+    publicClient.getGasPrice(),
+  ]);
+  const minimumGasUnits = accountDeployed
+    ? RELAYER_DEPLOYED_ACCOUNT_GAS_UNITS
+    : RELAYER_FRESH_ACCOUNT_GAS_UNITS;
+  const minimumGasBalance = gasPrice * minimumGasUnits;
+  return {
+    readyForBroadcast: gasBalance >= minimumGasBalance,
+    gasBalance,
+    gasPrice,
+    minimumGasBalance,
+    minimumGasUnits,
+  };
+}
+
 export function validateStaticPolicy(
   request: RelayExecutionRequest,
   policy: RelayerPolicy,
@@ -160,6 +194,17 @@ export class PrivateLaunchpadRelayer {
       );
     }
 
+    const gasReadiness = await readRelayerGasReadiness(
+      publicClient,
+      relayerAccount.address,
+      accountDeployed,
+    );
+    if (!gasReadiness.readyForBroadcast) {
+      throw new Error(
+        `relayer gas account ${relayerAccount.address} has insufficient balance of Robinhood ETH: available ${gasReadiness.gasBalance} wei, required at least ${gasReadiness.minimumGasBalance} wei for ${gasReadiness.minimumGasUnits} gas at the current gas price`,
+      );
+    }
+
     const parameters = {
       account: relayerAccount,
       address: this.policy.factory,
@@ -184,18 +229,6 @@ export class PrivateLaunchpadRelayer {
       sleep,
     );
 
-    // eth_call-based simulation does not require the sender to own native gas,
-    // so a completely empty relayer can otherwise pass every policy and
-    // execution check only to fail during broadcast with an opaque RPC error.
-    // Fail before writeContract with a stable, actionable message instead.
-    const relayerGasBalance = await publicClient.getBalance({
-      address: relayerAccount.address,
-    });
-    if (relayerGasBalance === 0n) {
-      throw new Error(
-        `relayer gas account ${relayerAccount.address} has no Robinhood ETH`,
-      );
-    }
     return walletClient.writeContract(simulation.request);
   }
 }

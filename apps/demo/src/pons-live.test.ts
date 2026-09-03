@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import type { Eip1193Provider } from "@private-launchpad/sdk";
 import {
+  assertPrivateRelayerReady,
   connectMetaMask,
   ensureRobinhoodMainnet,
   selectMetaMaskProvider,
@@ -97,5 +98,55 @@ describe("MetaMask Robinhood connection", () => {
       "eth_requestAccounts",
       "eth_chainId",
     ]);
+  });
+});
+
+describe("policy relayer funding preflight", () => {
+  it("allows funding only when the relayer can afford a fresh account", async () => {
+    const fetchImplementation = vi.fn(
+      async () =>
+        new Response(
+          JSON.stringify({
+            readyForBroadcast: true,
+            gasBalanceWei: "2000000",
+            minimumGasBalanceWei: "1000000",
+          }),
+          { status: 200 },
+        ),
+    );
+
+    await expect(
+      assertPrivateRelayerReady(
+        "/api/private-launchpad/v1/relay",
+        fetchImplementation,
+      ),
+    ).resolves.toBeUndefined();
+    expect(fetchImplementation).toHaveBeenCalledWith(
+      "/api/private-launchpad/healthz",
+      expect.objectContaining({ method: "GET", cache: "no-store" }),
+    );
+  });
+
+  it("fails closed before funds move when the relayer is underfunded", async () => {
+    const fetchImplementation = vi.fn(
+      async () =>
+        new Response(
+          JSON.stringify({
+            readyForBroadcast: false,
+            gasBalanceWei: "276447816450162",
+            minimumGasBalanceWei: "919976000000000",
+          }),
+          { status: 200 },
+        ),
+    );
+
+    await expect(
+      assertPrivateRelayerReady(
+        "/api/private-launchpad/v1/relay",
+        fetchImplementation,
+      ),
+    ).rejects.toThrow(
+      /insufficient Robinhood ETH.*Private funds were not moved/i,
+    );
   });
 });
